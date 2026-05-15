@@ -1,0 +1,351 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+/* Global UI scale. Inline pixel sizes throughout the components can't be
+   re-tuned without a sweep, so we lean on CSS `zoom` (Chrome/Safari/Firefox 126+)
+   to proportionally up-size fonts, paddings, borders and hit-zones in one
+   place. Tune this single value to shift the whole UI density. */
+#root {
+  zoom: 1.1;
+}
+
+body {
+  font-family: 'Geist', system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  background: #0d0d0d;
+  color: #ebebeb;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #161616;
+}
+::-webkit-scrollbar-thumb {
+  background: #383838;
+  border-radius: 0;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #4a4a4a;
+}
+
+input {
+  font-family: inherit;
+}
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 30px #1a1a1a inset !important;
+  -webkit-text-fill-color: #e0e0e0 !important;
+  caret-color: #e0e0e0;
+  transition: background-color 5000s ease-in-out 0s;
+}
+button {
+  font-family: inherit;
+}
+button:focus-visible,
+a:focus-visible,
+input:focus-visible {
+  outline: 2px solid #9d6ef088;
+  outline-offset: 1px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes scanline {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(100vh);
+  }
+}
+
+.menu-item:hover {
+  background: #1e1e1e !important;
+}
+.row-hover:hover {
+  background: #151515 !important;
+}
+.btn-hover:hover {
+  background: #1e1e1e !important;
+}
+.tab-btn:hover {
+  background: #1a1a1a !important;
+}
+.session-row:hover {
+  background: #161616 !important;
+}
+.ioc-row:hover {
+  background: #161616 !important;
+}
+
+/* Delete-confirm controls live inside .session-row; hidden until the row
+   is hovered, or until that specific row is in confirming state. */
+.session-actions {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.session-row:hover .session-actions,
+.session-actions.confirming {
+  opacity: 1;
+}
+
+/* ─── IDE editor surface ─────────────────────────────────────────────────
+   Mirrors the E.* tokens from theme.js. Inline styles handle per-language
+   accent colors; this stylesheet handles all state transitions (hover /
+   active / diff / ioc) because :hover can't be expressed inline. */
+.editor-scroll {
+  overflow: auto;
+  background: #0d0d0d;
+  position: relative;
+}
+.editor-table {
+  border-collapse: separate; /* required for position:sticky on <td> */
+  border-spacing: 0;
+  min-width: 100%;
+  width: max-content;
+  font-family: 'Geist Mono', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.editor-line {
+  cursor: text;
+}
+.editor-line .ed-marker,
+.editor-line .ed-ln {
+  background: #0a0a0a;
+  transition: background 0.08s, color 0.08s;
+}
+.editor-line .ed-code {
+  background: #0d0d0d;
+  transition: background 0.08s;
+}
+.editor-line:hover .ed-marker,
+.editor-line:hover .ed-ln,
+.editor-line:hover .ed-code {
+  background: #171717;
+}
+.editor-line.ioc .ed-marker,
+.editor-line.ioc .ed-ln,
+.editor-line.ioc .ed-code {
+  background: rgba(224, 112, 112, 0.05);
+}
+.editor-line.ioc:hover .ed-marker,
+.editor-line.ioc:hover .ed-ln,
+.editor-line.ioc:hover .ed-code {
+  background: rgba(224, 112, 112, 0.13);
+}
+.editor-line.add .ed-marker,
+.editor-line.add .ed-ln,
+.editor-line.add .ed-code {
+  background: rgba(92, 194, 121, 0.06);
+}
+.editor-line.add:hover .ed-marker,
+.editor-line.add:hover .ed-ln,
+.editor-line.add:hover .ed-code {
+  background: rgba(92, 194, 121, 0.13);
+}
+.editor-line.del .ed-marker,
+.editor-line.del .ed-ln,
+.editor-line.del .ed-code {
+  background: rgba(224, 112, 112, 0.06);
+}
+.editor-line.del:hover .ed-marker,
+.editor-line.del:hover .ed-ln,
+.editor-line.del:hover .ed-code {
+  background: rgba(224, 112, 112, 0.13);
+}
+.editor-line.active .ed-marker,
+.editor-line.active .ed-ln,
+.editor-line.active .ed-code {
+  background: #1d2026;
+}
+.editor-line.active .ed-ln {
+  color: #dadada !important;
+}
+
+/* ─── IDE editor tabs ───────────────────────────────────────────────────
+   Tab strip lives on its own row above the editor. Active tab merges
+   into the editor surface via matching background + a 2px accent stripe
+   on top (color comes from the per-language accent, set inline via the
+   --tab-accent CSS variable). */
+.editor-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 12px;
+  background: transparent;
+  border: none;
+  border-right: 1px solid #1c1c1c;
+  cursor: pointer;
+  font-size: 11.5px;
+  font-family: 'Geist Mono', 'mono-symbols', 'Fira Code', 'Consolas', monospace;
+  color: #8a8a8a;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.08s, color 0.08s;
+}
+.editor-tab:hover {
+  background: #171717;
+  color: #c8c8c8;
+}
+.editor-tab.active {
+  background: #0d0d0d;
+  color: #efefef;
+}
+.editor-tab.active::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--tab-accent, #9d6ef0);
+}
+.editor-tab .badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 2px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  line-height: 1;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+/* ─── Drag-to-resize handles ─────────────────────────────────────────────
+   Each resizable panel adds `position: relative` and renders
+   <ResizeHandle> on the relevant edge. The strip itself is a 6 px
+   transparent hit-zone; a 1 px accent line lights up on hover/drag so
+   the affordance is visible without cluttering the chrome at rest. */
+.resize-handle {
+  position: absolute;
+  z-index: 5;
+  background: transparent;
+  user-select: none;
+  touch-action: none;
+}
+.resize-handle::after {
+  content: '';
+  position: absolute;
+  background: transparent;
+  transition: background 0.12s;
+  pointer-events: none;
+}
+.resize-handle.resize-right  { top: 0; bottom: 0; right: 0; width: 6px;  cursor: col-resize; }
+.resize-handle.resize-left   { top: 0; bottom: 0; left: 0;  width: 6px;  cursor: col-resize; }
+.resize-handle.resize-top    { left: 0; right: 0; top: 0;   height: 6px; cursor: row-resize; }
+.resize-handle.resize-bottom { left: 0; right: 0; bottom: 0; height: 6px; cursor: row-resize; }
+
+.resize-handle.resize-right::after,
+.resize-handle.resize-left::after {
+  top: 0; bottom: 0; left: 50%; width: 1px; transform: translateX(-50%);
+}
+.resize-handle.resize-top::after,
+.resize-handle.resize-bottom::after {
+  left: 0; right: 0; top: 50%; height: 1px; transform: translateY(-50%);
+}
+.resize-handle:hover::after {
+  background: color-mix(in srgb, var(--resize-accent, #9d6ef0) 55%, transparent);
+}
+.resize-handle.dragging::after {
+  background: color-mix(in srgb, var(--resize-accent, #9d6ef0) 95%, transparent);
+}
+
+/* ─── IDE editor toolbar buttons ────────────────────────────────────── */
+.editor-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  font-size: 11px;
+  font-family: 'Geist Mono', 'JetBrains Mono', 'Consolas', monospace;
+  color: #9a9a9a;
+  cursor: pointer;
+  transition: background 0.08s, color 0.08s, border-color 0.08s;
+}
+.editor-toolbar-btn:hover {
+  background: #1a1a1a;
+  color: #efefef;
+  border-color: #303030;
+}
+.editor-toolbar-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.editor-toolbar-btn:disabled:hover {
+  background: transparent;
+  color: #9a9a9a;
+  border-color: transparent;
+}
+.editor-toolbar-btn svg {
+  display: block;
+  flex-shrink: 0;
+}
