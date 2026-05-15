@@ -82,7 +82,7 @@ export function getLangTheme(lang) {
       accentText: '#8dc4f0',
       accentBorder: '#5b9fd444',
       label: 'py',
-      obfChip: 'pyarmor',
+      obfChip: 'python',
       headerBg: '#0a1520',
       footerBg: '#080f18',
       sidebarBg: '#0c1820',

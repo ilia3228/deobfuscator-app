@@ -8,7 +8,7 @@ import { parseLayers } from '../utils/layers.js';
 // real `job` (status, phase, error, logs); when no job is in flight (e.g.
 // the user navigates here via Cmd-K), the screen falls back to a neutral
 // "no error context" placeholder.
-export default function ErrorState({ lang = 'js', lt, job, onRetry, onNew }) {
+export default function ErrorState({ lang = 'js', lt, job, onRetry, retryLabel = 'Retry', onNew }) {
   const lth = lt || getLangTheme(lang);
   const [expanded, setExpanded] = useState(false);
 
@@ -148,7 +148,7 @@ export default function ErrorState({ lang = 'js', lt, job, onRetry, onNew }) {
               <button onClick={onRetry} className="btn-hover" style={{ flex: 1, padding: '9px 0',
                 background: lth.accentDim, border: `1px solid ${lth.accent}`,
                 borderRadius: 3, fontSize: 12.5, fontWeight: 500, color: lth.accentText,
-                cursor: 'pointer' }}>Retry</button>
+                cursor: 'pointer' }}>{retryLabel}</button>
             )}
             <button onClick={onNew} className="btn-hover" style={{ flex: 1, padding: '9px 0',
               background: hasContext ? C.bg3 : lth.accentDim,
@@ -160,7 +160,7 @@ export default function ErrorState({ lang = 'js', lt, job, onRetry, onNew }) {
         </div>
       </div>
 
-      <LogStrip done lt={lth} entries={job?.logs} job={job} />
+      <LogStrip done lt={lth} entries={job?.logs} job={job} defaultOpen={false} />
     </div>
   );
 }

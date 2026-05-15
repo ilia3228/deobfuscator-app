@@ -75,29 +75,135 @@ export async function getHealth() {
   return jsonOrThrow(await fetch(`${BASE}/health`));
 }
 
+// ─── account ─────────────────────────────────────────────────────────────────
+export async function changePassword({ currentPassword, newPassword }) {
+  return jsonOrThrow(await fetch(`${BASE}/auth/change-password`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  }));
+}
+
+export async function deleteAccount({ emailConfirm }) {
+  const res = await fetch(`${BASE}/auth/me`, {
+    method: 'DELETE',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ email_confirm: emailConfirm }),
+  });
+  return jsonOrThrow(res);
+}
+
+/** Sign out from every device except the caller's own session. */
+export async function signOutAllOtherDevices() {
+  return jsonOrThrow(await fetch(`${BASE}/auth/tokens`, {
+    method: 'DELETE', headers: authHeaders(),
+  }));
+}
+
 // ─── sessions / jobs ─────────────────────────────────────────────────────────
 export async function getSessions() {
   return jsonOrThrow(await fetch(`${BASE}/sessions`, { headers: authHeaders() }));
 }
 
+/** Bulk-clear every analysis from the user's history. */
+export async function clearSessions() {
+  return jsonOrThrow(await fetch(`${BASE}/sessions`, {
+    method: 'DELETE', headers: authHeaders(),
+  }));
+}
+
+/**
+ * Trigger the export download. The browser handles the actual file save —
+ * we just produce a one-off URL with the bearer token attached as a query
+ * param (the request goes through the same proxy as the rest of /api/*).
+ */
+export function exportAllUrl() {
+  const t = getToken();
+  return `${BASE}/export${t ? `?token=${encodeURIComponent(t)}` : ''}`;
+}
+
 /**
  * Upload a sample for analysis.
  * @param {File|Blob} file
- * @param {{useLlm?: boolean, dynamicEval?: boolean, autoIoc?: boolean, langHint?: 'js'|'py', speed?: 'normal'|'fast', filename?: string}} opts
+ * @param {{
+ *   llmMode?: 'off'|'rename'|'format'|'both',
+ *   useLlm?: boolean,                 // legacy alias, ignored when llmMode is set
+ *   dynamicEval?: boolean,
+ *   autoIoc?: boolean,
+ *   staticAnalysis?: boolean,
+ *   rename?: boolean,
+ *   verbose?: boolean,
+ *   maxLayers?: number|null,
+ *   timeout?: number|null,
+ *   langHint?: 'js'|'py',
+ *   speed?: 'normal'|'fast',
+ *   filename?: string,
+ * }} opts
  * @returns {Promise<{job_id: string, lang: 'js'|'py', filename: string, size: number}>}
  */
 export async function analyze(file, opts = {}) {
   const fd = new FormData();
   const name = opts.filename || (file && file.name) || 'pasted.txt';
   fd.append('file', file, name);
-  fd.append('use_llm', opts.useLlm === true ? 'true' : 'false');
-  fd.append('dynamic_eval', opts.dynamicEval === false ? 'false' : 'true');
-  fd.append('auto_ioc', opts.autoIoc === false ? 'false' : 'true');
+
+  // Prefer the granular llmMode field; fall back to the legacy boolean
+  // so callers that haven't migrated to v2 options still work.
+  const llmMode =
+    opts.llmMode != null
+      ? opts.llmMode
+      : (opts.useLlm === true ? 'both' : 'off');
+  fd.append('llm_mode', llmMode);
+  // Send legacy alias too — backend accepts both, frontend stays compatible
+  // with older mock-api builds during rollout.
+  fd.append('use_llm', llmMode !== 'off' ? 'true' : 'false');
+
+  fd.append('dynamic_eval',    opts.dynamicEval    === false ? 'false' : 'true');
+  fd.append('auto_ioc',        opts.autoIoc        === false ? 'false' : 'true');
+  fd.append('static_analysis', opts.staticAnalysis === false ? 'false' : 'true');
+  fd.append('rename',          opts.rename         === false ? 'false' : 'true');
+  fd.append('verbose',         opts.verbose        === false ? 'false' : 'true');
+  if (opts.maxLayers != null && Number.isFinite(+opts.maxLayers)) {
+    fd.append('max_layers', String(Math.floor(+opts.maxLayers)));
+  }
+  if (opts.timeout != null && Number.isFinite(+opts.timeout)) {
+    fd.append('timeout', String(Math.floor(+opts.timeout)));
+  }
   if (opts.langHint) fd.append('lang_hint', opts.langHint);
   fd.append('speed', opts.speed || 'normal');
+
   return jsonOrThrow(await fetch(`${BASE}/analyze`, {
     method: 'POST', body: fd, headers: authHeaders(),
   }));
+}
+
+// ─── LLM config ──────────────────────────────────────────────────────────────
+export async function getLlmConfig() {
+  return jsonOrThrow(await fetch(`${BASE}/llm/config`, { headers: authHeaders() }));
+}
+
+/**
+ * @param {{
+ *   provider?: string, model?: string, base_url?: string,
+ *   api_key?: string, clear_api_key?: boolean,
+ *   temperature?: number, max_tokens?: number,
+ *   max_code_size?: number, timeout_seconds?: number,
+ *   api_key_env?: string,
+ * }} body
+ */
+export async function putLlmConfig(body) {
+  return jsonOrThrow(await fetch(`${BASE}/llm/config`, {
+    method: 'PUT',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body),
+  }));
+}
+
+/** @param {'js'|'py'|'both'} engine */
+export async function checkLlm(engine = 'both') {
+  return jsonOrThrow(await fetch(
+    `${BASE}/llm/check?engine=${encodeURIComponent(engine)}`,
+    { method: 'POST', headers: authHeaders() },
+  ));
 }
 
 export async function getJob(jobId) {

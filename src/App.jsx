@@ -12,6 +12,12 @@ import LoginState from './components/LoginState.jsx';
 import SignupState from './components/SignupState.jsx';
 import CommandPalette from './components/CommandPalette.jsx';
 import { readAnalysisOptions, writeAnalysisOptions } from './analysisOptions.js';
+import {
+  applyAccentToTheme,
+  getMonoFont,
+  readAppearanceOptions,
+  writeAppearanceOptions,
+} from './appearanceOptions.js';
 
 const emptyJob = () => ({
   id: null,
@@ -25,7 +31,28 @@ const emptyJob = () => ({
   result: null,
   error: null,
   uploadedCode: '',   // raw text of the just-uploaded sample (for live preview)
+  sourceFile: null,    // in-memory File for one-click retry
+  sourceOptions: null,
+  startedAt: null,
 });
+
+const LAYOUT_KEY = 'jsdeobf.layoutFlags';
+
+function readLayoutFlags() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}');
+    return {
+      sidebarCollapsed: parsed?.sidebarCollapsed === true,
+      iocOpen: parsed?.iocOpen !== false,
+    };
+  } catch {
+    return { sidebarCollapsed: false, iocOpen: true };
+  }
+}
+
+function hasFiles(evt) {
+  return Array.from(evt?.dataTransfer?.types || []).includes('Files');
+}
 
 // Read the first ~256 KB of a File/Blob as text. Used so the analysing view
 // can show the user's *actual* uploaded sample rather than a static fixture.
@@ -43,8 +70,8 @@ export default function App() {
   // 'boot' = initial /auth/me probe, gates the whole UI
   const [view, setView] = useState('boot');
   const [user, setUser] = useState(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [iocOpen, setIocOpen] = useState(true);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readLayoutFlags().sidebarCollapsed);
+  const [iocOpen, setIocOpen] = useState(() => readLayoutFlags().iocOpen);
   const [activeSession, setActiveSession] = useState(null);
   const [sessions, setSessions] = useState([]);          // live history shared across views
   const [sessionsTick, setSessionsTick] = useState(0);  // bump to refetch sessions
@@ -54,6 +81,8 @@ export default function App() {
   const [streamError, setStreamError] = useState(null); // set when SSE connection drops mid-job
   const [streamTick, setStreamTick] = useState(0);      // bump to force-reconnect the stream
   const [analysisOptions, setAnalysisOptions] = useState(() => readAnalysisOptions());
+  const [appearanceOptions, setAppearanceOptions] = useState(() => readAppearanceOptions());
+  const [globalDrag, setGlobalDrag] = useState(false);
   const streamUnsubRef = useRef(null);
   const prevViewRef = useRef('empty'); // last non-settings view for back navigation
 
@@ -62,24 +91,53 @@ export default function App() {
   // and use the neutral purple palette. Only the analysis-tied views adopt
   // the job's language colour.
   const neutralViews = new Set(['empty', 'login', 'signup', 'boot', 'settings']);
-  const lt = neutralViews.has(view) ? getLangTheme(null) : getLangTheme(lang);
+  const neutralTheme = applyAccentToTheme(getLangTheme(null), appearanceOptions.accent);
+  const analysisTheme = applyAccentToTheme(
+    getLangTheme(lang),
+    lang === 'py' ? appearanceOptions.pyAccent : appearanceOptions.jsAccent,
+  );
+  const lt = neutralViews.has(view) ? neutralTheme : analysisTheme;
 
   // ── dynamic browser tab title ─────────────────────────────────────────────
   useEffect(() => {
     const base = 'Unveil';
-    if (view === 'results' && job?.filename)       document.title = `${base} — ${job.filename}`;
-    else if (view === 'analyzing' && job?.filename) document.title = `${base} ● ${job.filename}`;
-    else if (view === 'error' && job?.filename)     document.title = `${base} ✗ ${job.filename}`;
-    else if (view === 'settings')                   document.title = `${base} — settings`;
+    if (view === 'results' && job?.filename)        document.title = `${base} - ${job.filename}`;
+    else if (view === 'analyzing' && job?.filename) document.title = `${base} - ${Math.round(job.progress || 0)}% - ${job.filename}`;
+    else if (view === 'error' && job?.filename)     document.title = `${base} - error - ${job.filename}`;
+    else if (view === 'settings')                   document.title = `${base} - settings`;
     else                                            document.title = base;
-  }, [view, job?.filename]);
+  }, [view, job?.filename, job?.progress]);
 
   useEffect(() => {
     writeAnalysisOptions(analysisOptions);
   }, [analysisOptions]);
 
+  useEffect(() => {
+    writeAppearanceOptions(appearanceOptions);
+    const root = document.documentElement;
+    const mono = getMonoFont(appearanceOptions.monoFont);
+    root.style.setProperty('--ui-scale', String(appearanceOptions.uiScale));
+    root.style.setProperty('--editor-font-size', `${appearanceOptions.editorFontSize}px`);
+    root.style.setProperty('--mono-font', mono.css);
+    document.body.classList.toggle('no-linenos', !appearanceOptions.lineNumbers);
+    document.body.classList.toggle('no-ioc-highlight', !appearanceOptions.iocHighlight);
+    document.body.classList.toggle('reduce-motion', !!appearanceOptions.reduceMotion);
+  }, [appearanceOptions]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify({ sidebarCollapsed, iocOpen }));
+    } catch {
+      // Layout persistence is a comfort feature; ignore storage failures.
+    }
+  }, [sidebarCollapsed, iocOpen]);
+
   const updateAnalysisOption = useCallback((key, value) => {
     setAnalysisOptions((current) => ({ ...current, [key]: value }));
+  }, []);
+
+  const updateAppearanceOption = useCallback((key, value) => {
+    setAppearanceOptions((current) => ({ ...current, [key]: value }));
   }, []);
 
   // ── sessions list (single source of truth, shared with Sidebar/Empty/Palette/Settings) ──
@@ -197,9 +255,6 @@ export default function App() {
     const uploadedCode = await readFilePreview(file);
     try {
       const effectiveOptions = { ...analysisOptions, ...opts };
-      if (effectiveOptions.useLlm == null) {
-        effectiveOptions.useLlm = !!effectiveOptions.llmRename;
-      }
       const meta = await api.analyze(file, { speed: 'fast', ...effectiveOptions });
       setJob({
         ...emptyJob(),
@@ -209,6 +264,9 @@ export default function App() {
         lang: meta.lang,
         status: 'queued',
         uploadedCode,
+        sourceFile: file,
+        sourceOptions: effectiveOptions,
+        startedAt: Date.now(),
       });
       setActiveSession(meta.job_id);
       setSessionsTick(t => t + 1);
@@ -237,7 +295,43 @@ export default function App() {
     setView('empty');
   }, []);
 
-  // ── keyboard shortcuts (⌘K, ⌘N, ⌘B, ⌘I) ─────────────────────────────────
+  const retryAnalysis = useCallback(async () => {
+    if (!job.sourceFile) return;
+    await startAnalysis(job.sourceFile, job.sourceOptions || {});
+  }, [job.sourceFile, job.sourceOptions, startAnalysis]);
+
+  useEffect(() => {
+    if (!user) return;
+    const onDragOver = (e) => {
+      if (view === 'empty' || e.defaultPrevented || !hasFiles(e)) return;
+      e.preventDefault();
+      setGlobalDrag(true);
+    };
+    const onDragLeave = (e) => {
+      if (!hasFiles(e)) return;
+      if (e.clientX <= 0 || e.clientY <= 0 ||
+          e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
+        setGlobalDrag(false);
+      }
+    };
+    const onDrop = (e) => {
+      if (view === 'empty' || e.defaultPrevented || !hasFiles(e)) return;
+      e.preventDefault();
+      setGlobalDrag(false);
+      const file = e.dataTransfer?.files?.[0];
+      if (file) startAnalysis(file);
+    };
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('dragleave', onDragLeave);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('dragleave', onDragLeave);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, [user, view, startAnalysis]);
+
+  // ── keyboard shortcuts (⌘K, ⌘N, ⌘B, ⌘I, ⌘,) ──────────────────────────────
   useEffect(() => {
     const h = (e) => {
       const mod = e.metaKey || e.ctrlKey;
@@ -246,6 +340,16 @@ export default function App() {
       if (e.key === 'n' || e.key === 'N') { e.preventDefault(); if (user) newAnalysis(); }
       if (e.key === 'b' || e.key === 'B') { e.preventDefault(); if (user) setSidebarCollapsed(c => !c); }
       if (e.key === 'i' || e.key === 'I') { e.preventDefault(); if (user) setIocOpen(c => !c); }
+      if (e.key === ',') {
+        e.preventDefault();
+        if (user) {
+          setView((current) => {
+            if (current === 'settings') return prevViewRef.current || 'empty';
+            prevViewRef.current = current;
+            return 'settings';
+          });
+        }
+      }
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
@@ -300,6 +404,10 @@ export default function App() {
         logs: j.logs || [],
         result: j.result,
         error: j.error,
+        uploadedCode: '',
+        sourceFile: null,
+        sourceOptions: null,
+        startedAt: null,
       });
       if (j.status === 'done')              setView('results');
       else if (j.status === 'error')        setView('error');
@@ -372,6 +480,18 @@ export default function App() {
         }}
         onLogout={handleLogout}
         user={user} lt={lt} job={job} />
+      {globalDrag && (
+        <div style={{ position:'fixed', inset:48, zIndex:70,
+          display:'flex', alignItems:'center', justifyContent:'center',
+          background:'rgba(8,8,10,.52)', pointerEvents:'none',
+          border:`1px dashed ${lt.accent}` }}>
+          <div style={{ padding:'10px 14px', background:C.bg1,
+            border:`1px solid ${lt.accent}`, borderRadius:3,
+            color:lt.accentText, fontFamily:C.mono, fontSize:12 }}>
+            Drop file to start a new analysis
+          </div>
+        </div>
+      )}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         <Sidebar
           collapsed={sidebarCollapsed}
@@ -397,10 +517,21 @@ export default function App() {
           {view === 'results'   && <ResultsState iocOpen={iocOpen}
               setIocOpen={setIocOpen} lang={lang} lt={lt} job={job} />}
           {view === 'error'     && <ErrorState lang={lang} lt={lt} job={job}
-              onRetry={newAnalysis} onNew={newAnalysis} />}
+              onRetry={job.sourceFile ? retryAnalysis : null}
+              retryLabel="Retry with same options"
+              onNew={newAnalysis} />}
           {view === 'settings'  && <SettingsState lt={lt} user={user}
               sessionCount={sessions.length} onLogout={handleLogout}
-              options={analysisOptions} onOptionChange={updateAnalysisOption} />}
+              onSessionsChanged={() => setSessionsTick((t) => t + 1)}
+              onAccountDeleted={() => {
+                setUser(null);
+                setJob(emptyJob());
+                setSessions([]);
+                setActiveSession(null);
+                setView('login');
+              }}
+              options={analysisOptions} onOptionChange={updateAnalysisOption}
+              appearance={appearanceOptions} onAppearanceChange={updateAppearanceOption} />}
         </div>
       </div>
       {paletteOpen && (

@@ -19,7 +19,7 @@ body,
    to proportionally up-size fonts, paddings, borders and hit-zones in one
    place. Tune this single value to shift the whole UI density. */
 #root {
-  zoom: 1.1;
+  zoom: var(--ui-scale, 1.1);
 }
 
 body {
@@ -47,6 +47,15 @@ body {
 
 input {
   font-family: inherit;
+}
+input.no-spin::-webkit-outer-spin-button,
+input.no-spin::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input.no-spin {
+  appearance: textfield;
+  -moz-appearance: textfield;
 }
 input:-webkit-autofill,
 input:-webkit-autofill:hover,
@@ -160,8 +169,8 @@ input:focus-visible {
   border-spacing: 0;
   min-width: 100%;
   width: max-content;
-  font-family: 'Geist Mono', 'JetBrains Mono', 'Consolas', monospace;
-  font-size: 12.5px;
+  font-family: var(--mono-font, 'Geist Mono', 'JetBrains Mono', 'Consolas', monospace);
+  font-size: var(--editor-font-size, 12.5px);
   line-height: 1.55;
 }
 .editor-line {
@@ -218,6 +227,33 @@ input:focus-visible {
 }
 .editor-line.active .ed-ln {
   color: #dadada !important;
+}
+
+body.no-linenos .ed-ln {
+  display: none !important;
+}
+
+body.no-ioc-highlight .editor-line.ioc .ed-marker,
+body.no-ioc-highlight .editor-line.ioc .ed-ln {
+  background: #0a0a0a;
+}
+
+body.no-ioc-highlight .editor-line.ioc .ed-code {
+  background: #0d0d0d;
+}
+
+body.no-ioc-highlight .editor-line.ioc:hover .ed-marker,
+body.no-ioc-highlight .editor-line.ioc:hover .ed-ln,
+body.no-ioc-highlight .editor-line.ioc:hover .ed-code {
+  background: #171717;
+}
+
+body.reduce-motion *,
+body.reduce-motion *::before,
+body.reduce-motion *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
 }
 
 /* ─── IDE editor tabs ───────────────────────────────────────────────────

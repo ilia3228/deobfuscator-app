@@ -159,9 +159,9 @@ function colouriseLogText(e, lth, defaultColor) {
   return segs.length ? segs : [{ text, color: defaultColor }];
 }
 
-export default function LogStrip({ running, done, lt, entries, job }) {
+export default function LogStrip({ running, done, lt, entries, job, defaultOpen = true }) {
   const lth = lt || getLangTheme(null);
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(defaultOpen);
   const [filter, setFilter] = useState('all'); // all | info | debug | ok
   const logRef = useRef(null);
 

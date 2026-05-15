@@ -1,34 +1,28 @@
-import React, { useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { C, getLangTheme } from '../theme.js';
 import { Ico } from './UI.jsx';
-import { OBFUSCATED_CODE, PY_OBFUSCATED_CODE } from '../data.js';
-import { ANALYSIS_OPTION_DEFAULTS } from '../analysisOptions.js';
+import { ANALYSIS_OPTION_DEFAULTS, LLM_MODES } from '../analysisOptions.js';
 import { useResizable, ResizeHandle } from './Resizable.jsx';
+import * as api from '../api.js';
 
 // Small bank of demo payloads, one per kind of obfuscation the engine handles.
 // Clicking a chip pastes the text into the textarea so the user can immediately
 // hit "Run deobfuscation".
 const TRY_SAMPLES = [
-  { label: 'javascript-obfuscator', lang: 'js', text: OBFUSCATED_CODE },
-  { label: 'pyarmor (py)',          lang: 'py', text: PY_OBFUSCATED_CODE },
-  {
-    label: 'Dean Edwards packer',
-    lang: 'js',
-    text:
-      "eval(function(p,a,c,k,e,d){e=function(c){return c.toString(36)};" +
-      "if(!''.replace(/^/,String)){while(c--)d[c.toString(a)]=k[c]||c.toString(a);" +
-      "k=[function(e){return d[e]}];e=function(){return'\\\\w+'};c=1};" +
-      "while(c--)if(k[c])p=p.replace(new RegExp('\\\\b'+e(c)+'\\\\b','g'),k[c]);" +
-      "return p}('1(\"2 0\")',3,3,'world|alert|hello'.split('|'),0,{}))",
-  },
-  {
-    label: 'eval-chain',
-    lang: 'js',
-    text:
-      "eval(atob('ZnVuY3Rpb24geCgpe2NvbnNvbGUubG9nKCdoZWxsbycpfTsgeCgpOw=='));\n" +
-      "Function('return this')().fetch('https://example.com/c2');",
-  },
+  { label: 'javascript-obfuscator', lang: 'js', url: '/samples/javascript-obfuscator.js' },
+  { label: 'pyfuscate',             lang: 'py', url: '/samples/pyfuscate_21.py' },
+  { label: 'pyobfuscate',           lang: 'py', url: '/samples/pyobfuscate_06.py' },
+  { label: 'JSFuck',                lang: 'js', url: '/samples/JsFuck.js' },
 ];
+
+const LARGE_FILE_BYTES = 5 * 1024 * 1024;
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes)) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
 
 // Heuristic content-based language detection for pasted code. We only
 // commit to a language when one side has clear markers and the other
@@ -59,7 +53,10 @@ export default function EmptyState({
   const [pasted, setPasted] = useState('');
   const [pickedFile, setPickedFile] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [sampleLoading, setSampleLoading] = useState(null);
+  const [sampleError, setSampleError] = useState(null);
   const [langMode, setLangMode] = useState('auto'); // 'auto' | 'js' | 'py'
+  const [llmConfigured, setLlmConfigured] = useState(null); // null=unknown, true/false once probed
   const fileInputRef = useRef(null);
   // Right-side options panel is user-resizable from its left edge.
   const {
@@ -67,20 +64,48 @@ export default function EmptyState({
     startDrag: startOptionsDrag,
     dragging: optionsDragging,
   } = useResizable({
-    initial: 220, min: 180, max: 360,
+    initial: 240, min: 200, max: 380,
     axis: 'x', edge: 'left',
     storageKey: 'jsdeobf.layout.options',
   });
-  const llm = !!options.llmRename;
+  const llmMode = LLM_MODES.includes(options?.llmMode) ? options.llmMode : 'off';
   const dynamicEval = options.dynamicEval !== false;
   const autoIoc = options.autoIoc !== false;
+  const staticAnalysis = options.staticAnalysis !== false;
+  const renameOn = options.rename !== false;
+  const verbose = options.verbose !== false;
+  const maxLayers = options.maxLayers ?? '';
+  const timeout = options.timeout ?? '';
+  const canSubmit = !!pickedFile || !!pasted.trim();
+  const fileWarning = pickedFile && pickedFile.size > LARGE_FILE_BYTES
+    ? `Large sample (${formatBytes(pickedFile.size)}). Analysis may take longer and LLM cleanup can be skipped by max-code-size limits.`
+    : null;
+
+  // Probe whether the backend has an LLM key configured. Disabled segmented
+  // controls when not — the user is directed to Settings → LLM.
+  useEffect(() => {
+    let cancelled = false;
+    api.getLlmConfig()
+      .then((cfg) => { if (!cancelled) setLlmConfigured(!!cfg?.api_key_present); })
+      .catch(() => { if (!cancelled) setLlmConfigured(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Auto-clamp to 'off' when the key disappears so we never submit a job that
+  // would be rejected by the backend's "llm not configured" guard.
+  useEffect(() => {
+    if (llmConfigured === false && llmMode !== 'off') {
+      onOptionChange?.('llmMode', 'off');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [llmConfigured]);
 
   // Live preview of which language the current paste will be routed to.
   // Pure display — `submit` re-runs detection to stay honest.
   const autoGuess = pasted.trim() ? detectLangFromText(pasted) : null;
 
-  const submit = async () => {
-    if (busy) return;
+  const submit = useCallback(async () => {
+    if (busy || sampleLoading) return;
     let file = pickedFile;
     let langHint;
     if (!file) {
@@ -97,27 +122,67 @@ export default function EmptyState({
     setBusy(true);
     try {
       await onAnalyze?.(file, {
-        useLlm: llm,
+        llmMode,
         dynamicEval,
         autoIoc,
+        staticAnalysis,
+        rename: renameOn,
+        verbose,
+        maxLayers: options.maxLayers ?? null,
+        timeout: options.timeout ?? null,
         langHint,
       });
     } finally {
       setBusy(false);
     }
-  };
+  }, [
+    busy, sampleLoading, pickedFile, pasted, langMode, onAnalyze,
+    llmMode, dynamicEval, autoIoc, staticAnalysis, renameOn, verbose,
+    options.maxLayers, options.timeout,
+  ]);
+
+  useEffect(() => {
+    const h = (e) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod || e.key !== 'Enter') return;
+      if (!canSubmit || busy) return;
+      e.preventDefault();
+      submit();
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [submit, canSubmit, busy]);
 
   const acceptFile = (f) => {
     if (!f) return;
     setPickedFile(f);
     setPasted('');
+    setSampleError(null);
     onClearError?.();
   };
 
-  const insertSample = (s) => {
+  const insertSample = async (s) => {
     setPickedFile(null);
-    setPasted(s.text);
+    setSampleError(null);
+    setLangMode(s.lang);
     onClearError?.();
+
+    if (s.text != null) {
+      setPasted(s.text);
+      return;
+    }
+
+    setSampleLoading(s.label);
+    try {
+      const response = await fetch(s.url, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      setPasted(await response.text());
+    } catch {
+      setPasted('');
+      setSampleError(`Could not load ${s.label} sample.`);
+    } finally {
+      setSampleLoading(null);
+    }
   };
 
   return (
@@ -174,7 +239,7 @@ export default function EmptyState({
               {drag
                 ? 'Drop to analyse…'
                 : pickedFile
-                  ? `${pickedFile.name} · ${pickedFile.size} B`
+                  ? `${pickedFile.name} · ${formatBytes(pickedFile.size)}`
                   : 'Drop file or paste code'}
             </span>
             <div style={{ display: 'flex', gap: 6 }}>
@@ -198,7 +263,7 @@ export default function EmptyState({
 
           <textarea
             value={pasted}
-            onChange={(e) => { setPasted(e.target.value); onClearError?.(); }}
+            onChange={(e) => { setPasted(e.target.value); setSampleError(null); onClearError?.(); }}
             placeholder={`var _0x4f2a=['push','ZmV0Y2g=','aHR0cHM6Ly9j…\n\n// or drag a .js / .py file onto this area`}
             rows={8}
             style={{
@@ -279,7 +344,7 @@ export default function EmptyState({
         <div style={{ marginTop: 12, width: '100%', maxWidth: 480 }}>
           <button
             onClick={submit}
-            disabled={busy || (!pickedFile && !pasted.trim())}
+            disabled={busy || !!sampleLoading || !canSubmit}
             style={{
               width: '100%',
               padding: '8px 0',
@@ -289,14 +354,25 @@ export default function EmptyState({
               fontSize: 13,
               fontWeight: 500,
               color: lth.accentText,
-              cursor: busy || (!pickedFile && !pasted.trim()) ? 'not-allowed' : 'pointer',
-              opacity: busy || (!pickedFile && !pasted.trim()) ? 0.55 : 1,
+              cursor: busy || sampleLoading || !canSubmit ? 'not-allowed' : 'pointer',
+              opacity: busy || sampleLoading || !canSubmit ? 0.55 : 1,
               fontFamily: 'Geist, sans-serif',
               letterSpacing: '0.01em',
             }}
           >
-            {busy ? 'Uploading…' : 'Run deobfuscation →'}
+            {sampleLoading ? 'Loading sample...' : busy ? 'Uploading…' : 'Run deobfuscation →'}
           </button>
+          {fileWarning && (
+            <div style={{
+              marginTop: 8, padding: '6px 10px', fontSize: 11,
+              fontFamily: C.mono, color: C.orange,
+              background: 'rgba(212,160,80,.08)',
+              border: '1px solid rgba(212,160,80,.28)', borderRadius: 2,
+              lineHeight: 1.45,
+            }}>
+              {fileWarning}
+            </div>
+          )}
           {uploadError && (
             <div style={{
               marginTop: 8, padding: '6px 10px', fontSize: 11,
@@ -304,6 +380,15 @@ export default function EmptyState({
               background: C.redDim, border: `1px solid ${C.red}55`, borderRadius: 2,
             }}>
               {uploadError}
+            </div>
+          )}
+          {sampleError && (
+            <div style={{
+              marginTop: 8, padding: '6px 10px', fontSize: 11,
+              fontFamily: C.mono, color: C.red,
+              background: C.redDim, border: `1px solid ${C.red}55`, borderRadius: 2,
+            }}>
+              {sampleError}
             </div>
           )}
         </div>
@@ -332,14 +417,16 @@ export default function EmptyState({
             <button
               key={s.label}
               onClick={() => insertSample(s)}
+              disabled={!!sampleLoading}
               className="btn-hover"
-              title={`Paste ${s.label} sample (${s.lang})`}
+              title={`Load ${s.label} sample (${s.lang})`}
               style={{
                 background: 'none',
                 border: 'none',
-                cursor: 'pointer',
+                cursor: sampleLoading ? 'wait' : 'pointer',
                 fontSize: 11,
                 color: lth.accentText,
+                opacity: sampleLoading ? 0.6 : 1,
                 padding: 0,
                 fontFamily: C.mono,
                 textDecoration: 'underline',
@@ -373,59 +460,96 @@ export default function EmptyState({
         />
         <div
           style={{
-            fontSize: 10.5,
-            fontWeight: 500,
-            color: C.textMuted,
-            textTransform: 'uppercase',
-            letterSpacing: '.1em',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
             marginBottom: 14,
           }}
         >
-          Options
+          <div
+            style={{
+              fontSize: 10.5,
+              fontWeight: 500,
+              color: C.textMuted,
+              textTransform: 'uppercase',
+              letterSpacing: '.1em',
+            }}
+          >
+            Options
+          </div>
+          <button
+            onClick={() => {
+              ['llmMode', 'dynamicEval', 'autoIoc', 'staticAnalysis', 'rename',
+               'verbose', 'maxLayers', 'timeout'].forEach((k) => {
+                onOptionChange?.(k, ANALYSIS_OPTION_DEFAULTS[k]);
+              });
+            }}
+            className="btn-hover"
+            title="Reset all options to defaults"
+            style={{
+              fontSize: 10, fontFamily: C.mono, color: C.textMuted,
+              background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
+              textDecoration: 'underline', textUnderlineOffset: 3,
+            }}
+          >
+            reset
+          </button>
         </div>
 
-        <button
-          type="button"
-          role="checkbox"
-          aria-checked={llm}
-          onClick={() => onOptionChange?.('llmRename', !llm)}
-          style={{
-            cursor: 'pointer',
-            marginBottom: 2,
-            padding: '9px 10px',
-            background: llm ? C.bg3 : 'transparent',
-            border: `1px solid ${llm ? C.border2 : C.border}`,
-            borderRadius: 3,
-            transition: 'all .1s',
-            display: 'block',
-            width: '100%',
-            textAlign: 'left',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-            <div
-              style={{
-                width: 14,
-                height: 14,
-                borderRadius: 2,
-                flexShrink: 0,
-                background: llm ? lth.accent : C.bg4,
-                border: `1.5px solid ${llm ? lth.accent : C.border2}`,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              {llm && <Ico d="M3 8l3.5 3.5 6.5-6" size={10} col="#fff" />}
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 11, color: C.text, fontWeight: 500, marginBottom: 6 }}>
+            LLM mode
+          </div>
+          <div
+            role="radiogroup"
+            aria-label="LLM mode"
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(4, 1fr)',
+              border: `1px solid ${C.border2}`,
+              borderRadius: 3,
+              overflow: 'hidden',
+              opacity: llmConfigured === false ? 0.55 : 1,
+            }}
+          >
+            {LLM_MODES.map((m, i) => {
+              const active = llmMode === m;
+              const disabled = llmConfigured === false && m !== 'off';
+              return (
+                <button
+                  key={m}
+                  role="radio"
+                  aria-checked={active}
+                  disabled={disabled}
+                  onClick={() => !disabled && onOptionChange?.('llmMode', m)}
+                  title={
+                    m === 'off' ? 'No LLM (default)' :
+                    m === 'rename' ? 'Use LLM only for variable renaming' :
+                    m === 'format' ? 'Use LLM only for formatting/cleanup' :
+                    'Use LLM for both rename + format'
+                  }
+                  style={{
+                    padding: '5px 0',
+                    fontSize: 11,
+                    fontFamily: C.mono,
+                    background: active ? lth.accentDim : 'transparent',
+                    color: active ? lth.accentText : C.textDim,
+                    border: 'none',
+                    borderLeft: i === 0 ? 'none' : `1px solid ${C.border}`,
+                    cursor: disabled ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {m}
+                </button>
+              );
+            })}
+          </div>
+          {llmConfigured === false && (
+            <div style={{ marginTop: 6, fontSize: 10.5, color: C.textMuted, lineHeight: 1.45 }}>
+              No API key — configure LLM in Settings → LLM provider.
             </div>
-            <span style={{ fontSize: 12, color: llm ? C.text : C.textDim, fontWeight: 500 }}>
-              LLM rename
-            </span>
-          </div>
-          <div style={{ fontSize: 11, color: C.textMuted, paddingLeft: 22 }}>
-            GPT-4o variable renaming on the deobfuscated output
-          </div>
-        </button>
+          )}
+        </div>
 
         <OptionCheck
           checked={dynamicEval}
@@ -442,6 +566,84 @@ export default function EmptyState({
           label="Auto-extract IOCs"
           desc="Run IOC extractor on completion"
         />
+
+        <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: 10.5, color: C.textMuted, fontFamily: C.mono,
+            textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 8 }}>
+            Advanced
+          </div>
+          <NumberRow
+            label="Max layers"
+            hint="engine default"
+            value={maxLayers}
+            onChange={(v) => onOptionChange?.('maxLayers', v)}
+            placeholder="default"
+          />
+          <NumberRow
+            label="Timeout"
+            hint="seconds per layer"
+            value={timeout}
+            onChange={(v) => onOptionChange?.('timeout', v)}
+            placeholder="default"
+          />
+          <OptionCheck
+            checked={staticAnalysis}
+            onChange={() => onOptionChange?.('staticAnalysis', !staticAnalysis)}
+            accent={lth.accent}
+            label="Static analysis"
+            desc="AST + string transforms"
+          />
+          <OptionCheck
+            checked={renameOn}
+            onChange={() => onOptionChange?.('rename', !renameOn)}
+            accent={lth.accent}
+            label="Identifier rename"
+            desc="heuristic short names"
+          />
+          <OptionCheck
+            checked={verbose}
+            onChange={() => onOptionChange?.('verbose', !verbose)}
+            accent={lth.accent}
+            label="Verbose logs"
+            desc="pass -v to engine"
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NumberRow({ label, hint, value, onChange, placeholder }) {
+  return (
+    <div style={{ marginBottom: 7 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <div>
+          <div style={{ fontSize: 11.5, color: C.text, fontWeight: 500 }}>{label}</div>
+          <div style={{ fontSize: 10.5, color: C.textMuted, marginTop: 1 }}>{hint}</div>
+        </div>
+        <input
+          type="text"
+          inputMode="numeric"
+          value={value}
+          placeholder={placeholder}
+          onChange={(e) => {
+            const raw = e.target.value.replace(/[^\d]/g, '');
+            if (raw === '') return onChange(null);
+            const n = Number(raw);
+            onChange(Number.isFinite(n) && n > 0 ? Math.floor(n) : null);
+          }}
+          style={{
+            width: 76,
+            background: C.bg2,
+            border: `1px solid ${C.border2}`,
+            padding: '5px 8px',
+            fontSize: 11.5,
+            color: C.text,
+            outline: 'none',
+            borderRadius: 2,
+            fontFamily: C.mono,
+          }}
+        />
       </div>
     </div>
   );
@@ -456,39 +658,41 @@ function OptionCheck({ checked, onChange, accent, label, desc }) {
       onClick={onChange}
       style={{
         cursor: 'pointer',
-        marginBottom: 2,
-        padding: '9px 10px',
-        background: checked ? C.bg3 : 'transparent',
-        border: `1px solid ${checked ? C.border2 : C.border}`,
-        borderRadius: 3,
+        marginBottom: 4,
+        padding: '4px 0',
+        background: 'transparent',
+        border: 'none',
         transition: 'all .1s',
-        display: 'block',
+        display: 'flex',
+        alignItems: 'flex-start',
+        gap: 8,
         width: '100%',
         textAlign: 'left',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-        <div
-          style={{
-            width: 14,
-            height: 14,
-            borderRadius: 2,
-            flexShrink: 0,
-            background: checked ? accent : C.bg4,
-            border: `1.5px solid ${checked ? accent : C.border2}`,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          {checked && <Ico d="M3 8l3.5 3.5 6.5-6" size={10} col="#fff" />}
-        </div>
-        <span style={{ fontSize: 12, color: checked ? C.text : C.textDim, fontWeight: 500 }}>
-          {label}
-        </span>
+      <div
+        style={{
+          width: 13,
+          height: 13,
+          borderRadius: 2,
+          flexShrink: 0,
+          marginTop: 2,
+          background: checked ? accent : C.bg4,
+          border: `1.5px solid ${checked ? accent : C.border2}`,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        {checked && <Ico d="M3 8l3.5 3.5 6.5-6" size={9} col="#fff" />}
       </div>
-      <div style={{ fontSize: 11, color: C.textMuted, paddingLeft: 22 }}>
-        {desc}
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 11.5, color: checked ? C.text : C.textDim, fontWeight: 500 }}>
+          {label}
+        </div>
+        <div style={{ fontSize: 10.5, color: C.textMuted, marginTop: 1, lineHeight: 1.35 }}>
+          {desc}
+        </div>
       </div>
     </button>
   );

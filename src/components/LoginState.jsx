@@ -56,26 +56,6 @@ export default function LoginState({ onSwitch, onAuthed }) {
             Sign in to sync sessions across devices.
           </div>
 
-          <div style={{ marginBottom:14 }}>
-            <div style={{ display:'flex', gap:6, opacity: 0.4 }}>
-              {['GitHub','Google','SSO'].map(p=>(
-                <button type="button" key={p} disabled title="Not available yet"
-                  style={{ flex:1, padding:'7px 0',
-                  background: C.bg3, border:`1px solid ${C.border2}`, borderRadius:3,
-                  fontSize:11.5, color: C.textDim, cursor:'not-allowed' }}>{p}</button>
-              ))}
-            </div>
-            <div style={{ fontSize:10, color: C.textMuted, textAlign:'center',
-              marginTop:5, fontFamily: C.mono }}>OAuth coming soon</div>
-          </div>
-
-          <div style={{ display:'flex', alignItems:'center', gap:8, margin:'10px 0 14px' }}>
-            <div style={{ flex:1, height:1, background: C.border }} />
-            <span style={{ fontSize:10, color: C.textMuted, fontFamily:C.mono,
-              textTransform:'uppercase', letterSpacing:'.1em' }}>or</span>
-            <div style={{ flex:1, height:1, background: C.border }} />
-          </div>
-
           {[
             { label:'Email', val:email, set:setEmail, mono:false, type:'email', auto:'username' },
             { label:'Password', val:pw, set:setPw, mono:true, type:'password', auto:'current-password' },

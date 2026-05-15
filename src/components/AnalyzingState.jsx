@@ -22,6 +22,8 @@ export default function AnalyzingState({ lang = 'js', lt, job, onCancel, streamE
     status: c.done ? 'done' : 'running',
   })) : liveLayers;
   const lastLine = lastNonEmpty(job?.logs);
+  const progress = Math.max(0, Math.min(1, Number(job?.progress || 0)));
+  const etaText = estimateEta(job?.startedAt, progress);
 
   // The CodeViewer always shows what the user actually uploaded; we never
   // fall back to a static fixture during an in-flight job.
@@ -146,9 +148,16 @@ export default function AnalyzingState({ lang = 'js', lt, job, onCancel, streamE
           );
         })}
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 11, fontFamily: C.mono, color: C.textMuted }}>
-          {`${Math.round((job?.progress || 0) * 100)}%`}
-        </span>
+        <div style={{ display:'flex', alignItems:'center', gap:8,
+          fontSize: 11, fontFamily: C.mono, color: C.textMuted }}>
+          <span>{`${Math.round(progress * 100)}%`}</span>
+          {etaText && (
+            <>
+              <span style={{ color:C.border2 }}>·</span>
+              <span>eta {etaText}</span>
+            </>
+          )}
+        </div>
       </div>
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
@@ -336,4 +345,16 @@ export default function AnalyzingState({ lang = 'js', lt, job, onCancel, streamE
       <LogStrip running lt={lth} entries={job?.logs} />
     </div>
   );
+}
+
+function estimateEta(startedAt, progress) {
+  if (!startedAt || progress <= 0.05 || progress >= 0.98) return null;
+  const elapsed = Date.now() - startedAt;
+  if (elapsed < 3000) return null;
+  const remaining = Math.max(0, elapsed * (1 - progress) / progress);
+  const seconds = Math.round(remaining / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `${minutes}m ${rest}s`;
 }
