@@ -15,6 +15,12 @@ import { useResizable, ResizeHandle } from './Resizable.jsx';
 const CODE_PREVIEW_RE = /^\s*\d{1,4}\s*[|│]\s/;
 const MORE_LINES_RE   = /^\s*\.{3,}\s*\(\d+\s+more lines?\)\s*$/;
 
+// JS deobfuscator banner — three box-drawing lines printed to stderr at
+// startup (`Logger.header()` in js-deobfuscator/src/utils/logger.ts). They
+// add three visually-noisy rows to the top of every analysis with no useful
+// content, so we strip them client-side.
+const BANNER_RE = /^\s*[╔╗╚╝║]/;
+
 // Path-bearing INFO chatter we don't want to surface in the UI.
 // Some are dropped outright (the user never wants to see the API's run dir);
 // others are kept but stripped down to a basename so the line is still useful.
@@ -41,6 +47,10 @@ function filterAndSanitise(entries) {
   for (const e of entries || []) {
     const text = e.text || '';
     const trimmed = text.trimStart();
+    // Drop blank/whitespace-only entries (real content lines never get here).
+    if (!trimmed) continue;
+    // Drop the JS deobfuscator's startup banner.
+    if (BANNER_RE.test(text)) continue;
     // Drop the line-by-line code dump that follows "Saved: …" in the backend.
     if (CODE_PREVIEW_RE.test(text)) continue;
     if (MORE_LINES_RE.test(text)) continue;
@@ -58,105 +68,175 @@ function filterAndSanitise(entries) {
 
 // ─── per-line colourisation ──────────────────────────────────────────────────
 // Returns an array of `{ text, color }` segments for one log line so the
-// most important parts (percentages, layer numbers, obfuscator names) jump
-// out visually — without losing the surrounding context.
+// most important parts (percentages, layer numbers, file sizes, durations)
+// jump out visually — without losing the surrounding context.
+//
+// Rule of thumb: only colour numbers that sit in a *named* context the user
+// cares about (a percentage, "Layer N/M", "X bytes", "Xms", "N identifiers",
+// …). Random digits inside obfuscator IDs (`_0x4a8d`), hex literals
+// (`0x29071`) and content hashes (`47aa7e8edf61a7ca`) stay dim — colouring
+// arbitrary digits made every log line look like a Christmas tree.
 function colouriseLogText(e, lth, defaultColor) {
   const text = e.text || '';
   if (!text) return [{ text: ' ', color: defaultColor }];
 
-  const segs = [];
-  let i = 0;
-  const len = text.length;
-  const push = (t, color) => {
-    if (!t) return;
-    const last = segs[segs.length - 1];
-    if (last && last.color === color) last.text += t;
-    else segs.push({ text: t, color });
-  };
-
   // Whole-line shortcuts — these read as section headers.
-  if (text.startsWith('──')) return [{ text, color: lth.accentText }];
+  // Match the ASCII (─) and box-drawing (━ ═) horizontal runs the backends
+  // emit for layer / IOC report separators.
+  if (/^\s*[─━═]{2,}/.test(text)) return [{ text, color: lth.accentText }];
+
   if (/^Detected:\s/.test(text)) {
     const m = text.match(/^(Detected:\s+)(.+?)(\s*\(([\d.]+%)\))?\s*$/);
     if (m) {
-      push(m[1], C.textDim);
-      push(m[2], lth.accentText);
+      const segs = [
+        { text: m[1], color: C.textDim },
+        { text: m[2], color: lth.accentText },
+      ];
       if (m[3]) {
-        push(' (', C.textMuted);
-        push(m[4], C.orange);
-        push(')', C.textMuted);
+        segs.push({ text: ' (',  color: C.textMuted });
+        segs.push({ text: m[4],  color: C.orange });
+        segs.push({ text: ')',   color: C.textMuted });
       }
       return segs;
     }
   }
   if (/^Methods:\s/.test(text) || /^Anti-analysis findings:\s/.test(text)) {
     const colon = text.indexOf(':');
-    push(text.slice(0, colon + 1) + ' ', C.textDim);
+    const segs = [{ text: text.slice(0, colon + 1) + ' ', color: C.textDim }];
     const items = text.slice(colon + 1).split(',').map((s) => s.trim()).filter(Boolean);
     items.forEach((it, idx) => {
-      if (idx > 0) push(', ', C.textMuted);
-      push(it, lth.codeBuiltin || lth.accentText);
+      if (idx > 0) segs.push({ text: ', ', color: C.textMuted });
+      segs.push({ text: it, color: lth.codeBuiltin || lth.accentText });
     });
     return segs;
   }
   if (/^(Saved|File):\s/.test(text)) {
     const m = text.match(/^(\w+:\s+)(\S+)(.*)$/);
     if (m) {
-      push(m[1], C.textDim);
-      push(m[2], lth.codeFn || lth.accentText);
-      push(m[3], C.textMuted);
-      return segs;
+      return [
+        { text: m[1], color: C.textDim },
+        { text: m[2], color: lth.codeFn || lth.accentText },
+        { text: m[3], color: C.textMuted },
+      ];
     }
   }
   if (/^Done\./.test(text)) return [{ text, color: C.green }];
 
-  // Generic in-line colouring: numbers, percentages, "Layer N/M".
-  // Tiny tokeniser — far cheaper than a regex replace per segment.
-  while (i < len) {
-    const c = text[i];
-    // % numbers like "86%" → orange
-    if (/[0-9]/.test(c)) {
-      let j = i;
-      while (j < len && /[0-9.]/.test(text[j])) j++;
-      // optional suffix: "%", " ms", " bytes", " KB"
-      const head = text.slice(i, j);
-      if (text[j] === '%') {
-        push(head + '%', C.orange);
-        i = j + 1;
-        continue;
-      }
-      push(head, lth.codeNumber || C.orange);
-      i = j;
-      continue;
-    }
-    // Layer headers in mid-line: "Layer 3/5"
-    if (text.slice(i).startsWith('Layer ') && /^\d/.test(text.slice(i + 6))) {
-      push('Layer ', lth.accentText);
-      i += 6;
-      continue;
-    }
-    // Quoted bits: 'foo' or "bar"
-    if (c === '"' || c === "'") {
-      const q = c;
-      let j = i + 1;
-      while (j < len && text[j] !== q) j++;
-      if (j < len) j++;
-      push(text.slice(i, j), lth.codeString || C.textDim);
-      i = j;
-      continue;
-    }
-    // Skip a regular char.
-    let j = i;
-    while (j < len && !/[0-9"'L]/.test(text[j])) j++;
-    if (j === i) {
-      push(text[i], defaultColor);
-      i++;
-    } else {
-      push(text.slice(i, j), defaultColor);
-      i = j;
+  // Generic case: collect "skip" and "highlight" ranges, then stitch
+  // unhighlighted gaps as default-coloured spans.
+  const numColor = lth.codeNumber || C.orange;
+  const strColor = lth.codeString || C.textDim;
+  const accentCol = lth.accentText;
+
+  // Ranges we MUST leave untouched — colouring slices of these reads
+  // as "the parser thinks 4 and a8d are different things".
+  const skip = [];
+  const reSkip = /_?0x[a-fA-F0-9]+|\b[a-fA-F0-9]{12,}\b/g;
+  for (let m; (m = reSkip.exec(text)); ) skip.push([m.index, m.index + m[0].length]);
+  const inSkip = (s, end) => skip.some(([a, b]) => s < b && end > a);
+
+  const ranges = [];
+  const add = (start, end, color) => {
+    if (start >= end || inSkip(start, end)) return;
+    ranges.push({ start, end, color });
+  };
+
+  // Quoted bits: 'foo' or "bar" — fold into the string colour, and treat the
+  // whole quoted region as a skip range so later patterns don't carve out
+  // sub-fragments inside it (e.g. "1 changes" inside a literal sentence).
+  const reStr = /"[^"\\\n]*(?:\\.[^"\\\n]*)*"|'[^'\\\n]*(?:\\.[^'\\\n]*)*'/g;
+  for (let m; (m = reStr.exec(text)); ) {
+    ranges.push({ start: m.index, end: m.index + m[0].length, color: strColor });
+    skip.push([m.index, m.index + m[0].length]);
+  }
+
+  // Numbers with optional thousand-separator characters in any locale.
+  // js-deobf uses `Number.toLocaleString()`, which on Windows + a non-en
+  // locale (ru / fr / pl …) inserts NBSP / NARROW NBSP / THIN SPACE
+  // between thousands. The Swiss apostrophe and the English comma are
+  // common when other tools are mixed in.
+  //   `\d[…]*(?:\.\d+)?` — one leading digit, then any combination of
+  //   digit + thousand-separator chars, then an optional fractional tail.
+  const NUM = `\\d[\\d \\u00A0\\u202F\\u2009',]*(?:\\.\\d+)?`;
+  const trimSepEnd = (s) => s.replace(/[\s\u00A0\u202F\u2009',]+$/, '');
+
+  // "Layer N" and "Layer N/M" — highlight both the keyword and the numerals.
+  const reLayer = /\bLayer\s+(\d+)(?:\s*\/\s*(\d+))?/g;
+  for (let m; (m = reLayer.exec(text)); ) {
+    add(m.index, m.index + 5, accentCol); // "Layer"
+    const n1 = m.index + m[0].indexOf(m[1]);
+    add(n1, n1 + m[1].length, numColor);
+    if (m[2]) {
+      const n2 = m.index + m[0].lastIndexOf(m[2]);
+      add(n2, n2 + m[2].length, numColor);
     }
   }
-  return segs.length ? segs : [{ text, color: defaultColor }];
+
+  // Percentages — "86%", "100%", "0.5%". The whole thing (digits + %) is the
+  // semantic unit, so colour m[0] verbatim.
+  const rePct = new RegExp(`\\b${NUM}%`, 'g');
+  for (let m; (m = rePct.exec(text)); ) add(m.index, m.index + m[0].length, C.orange);
+
+  // File sizes — "1 421 bytes", "9.0 KB", "267 chars" (number portion only).
+  const reSize = new RegExp(`\\b(${NUM})\\s*(?:bytes?|chars?|KB|MB|GB|kB|kb|B)\\b`, 'g');
+  for (let m; (m = reSize.exec(text)); ) {
+    add(m.index, m.index + trimSepEnd(m[1]).length, numColor);
+  }
+
+  // Durations — "5.5s", "250ms", "1 250 ms" (number portion only).
+  const reDur = new RegExp(`\\b(${NUM})\\s?(?:ms|s)\\b`, 'g');
+  for (let m; (m = reDur.exec(text)); ) {
+    add(m.index, m.index + trimSepEnd(m[1]).length, numColor);
+  }
+
+  // Counts — "Renamed 4 identifiers", "AST pass 1: 0 changes", "5/8 patterns",
+  // "16 entries", "2 string transforms", "5 webpack modules". The trailing
+  // noun list is what stops random integers (e.g. file paths with numbers)
+  // from picking up the highlight.
+  const reCount = new RegExp(
+    `\\b(${NUM})\\s+(?:identifiers?|changes?|entries|patterns?|modules?|layers?|errors?|warnings?|matches?|hits?|bindings?|aliases?|nodes?|transforms?|unpackers?|passes?|decoders?|samples?|webpack)\\b`,
+    'g',
+  );
+  for (let m; (m = reCount.exec(text)); ) {
+    add(m.index, m.index + trimSepEnd(m[1]).length, numColor);
+  }
+
+  // "pass N" / "AST pass N".
+  const rePass = /\b[Pp]ass\s+(\d+)\b/g;
+  for (let m; (m = rePass.exec(text)); ) {
+    const start = m.index + m[0].indexOf(m[1]);
+    add(start, start + m[1].length, numColor);
+  }
+
+  // Fractions — "5/8", "1/2" (both numerator and denominator).
+  const reFrac = /\b(\d+)\/(\d+)\b/g;
+  for (let m; (m = reFrac.exec(text)); ) {
+    add(m.index, m.index + m[1].length, numColor);
+    const dStart = m.index + m[0].length - m[2].length;
+    add(dStart, dStart + m[2].length, numColor);
+  }
+
+  if (!ranges.length) return [{ text, color: defaultColor }];
+  ranges.sort((a, b) => a.start - b.start);
+
+  const segs = [];
+  let pos = 0;
+  for (const r of ranges) {
+    if (r.start < pos) continue; // skip overlaps; first one wins
+    if (r.start > pos) segs.push({ text: text.slice(pos, r.start), color: defaultColor });
+    segs.push({ text: text.slice(r.start, r.end), color: r.color });
+    pos = r.end;
+  }
+  if (pos < text.length) segs.push({ text: text.slice(pos), color: defaultColor });
+
+  // Coalesce neighbours that share a colour so we emit fewer <span>s.
+  const out = [];
+  for (const s of segs) {
+    const last = out[out.length - 1];
+    if (last && last.color === s.color) last.text += s.text;
+    else out.push(s);
+  }
+  return out;
 }
 
 export default function LogStrip({ running, done, lt, entries, job, defaultOpen = true }) {
@@ -206,7 +286,7 @@ export default function LogStrip({ running, done, lt, entries, job, defaultOpen 
     if (open && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [open, cleaned.length]);
 
-  const isLayerHeader = (e) => e.text.startsWith('──');
+  const isLayerHeader = (e) => /^\s*[─━═]{2,}/.test(e.text);
   const isDone = (e) => e.level === 'OK' && e.indent === 0;
 
   return (

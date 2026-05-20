@@ -83,6 +83,11 @@ export default function App() {
   const [analysisOptions, setAnalysisOptions] = useState(() => readAnalysisOptions());
   const [appearanceOptions, setAppearanceOptions] = useState(() => readAppearanceOptions());
   const [globalDrag, setGlobalDrag] = useState(false);
+  // Optional deep-link target for the next Settings open (e.g. clicking the
+  // "Settings → LLM provider" hint from the upload screen sets this to 'llm'
+  // so SettingsState mounts on that tab). Cleared whenever the user leaves
+  // settings so a plain Settings click always lands on Account.
+  const [settingsInitialSection, setSettingsInitialSection] = useState(null);
   const streamUnsubRef = useRef(null);
   const prevViewRef = useRef('empty'); // last non-settings view for back navigation
 
@@ -107,6 +112,12 @@ export default function App() {
     else if (view === 'settings')                   document.title = `${base} - settings`;
     else                                            document.title = base;
   }, [view, job?.filename, job?.progress]);
+
+  // Reset the deep-link section whenever we leave settings so the next plain
+  // Settings click falls back to the default tab.
+  useEffect(() => {
+    if (view !== 'settings' && settingsInitialSection) setSettingsInitialSection(null);
+  }, [view, settingsInitialSection]);
 
   useEffect(() => {
     writeAnalysisOptions(analysisOptions);
@@ -293,6 +304,17 @@ export default function App() {
     setActiveSession(null);
     setUploadError(null);
     setView('empty');
+  }, []);
+
+  // Open settings on a specific tab. Used by the upload screen to deep-link
+  // into "LLM provider" when the user hasn't set up / verified the key yet.
+  const openSettingsAt = useCallback((section) => {
+    setSettingsInitialSection(section || null);
+    setView((current) => {
+      if (current === 'settings') return current;
+      prevViewRef.current = current;
+      return 'settings';
+    });
   }, []);
 
   const retryAnalysis = useCallback(async () => {
@@ -510,7 +532,8 @@ export default function App() {
           {view === 'empty'     && <EmptyState lang={lang} lt={lt}
               onAnalyze={startAnalysis} uploadError={uploadError}
               onClearError={() => setUploadError(null)}
-              options={analysisOptions} onOptionChange={updateAnalysisOption} />}
+              options={analysisOptions} onOptionChange={updateAnalysisOption}
+              onOpenSettings={() => openSettingsAt('llm')} />}
           {view === 'analyzing' && <AnalyzingState lang={lang} lt={lt}
               job={job} onCancel={cancelAnalysis}
               streamError={streamError} onReconnect={reconnectStream} />}
@@ -522,7 +545,6 @@ export default function App() {
               onNew={newAnalysis} />}
           {view === 'settings'  && <SettingsState lt={lt} user={user}
               sessionCount={sessions.length} onLogout={handleLogout}
-              onSessionsChanged={() => setSessionsTick((t) => t + 1)}
               onAccountDeleted={() => {
                 setUser(null);
                 setJob(emptyJob());
@@ -531,7 +553,8 @@ export default function App() {
                 setView('login');
               }}
               options={analysisOptions} onOptionChange={updateAnalysisOption}
-              appearance={appearanceOptions} onAppearanceChange={updateAppearanceOption} />}
+              appearance={appearanceOptions} onAppearanceChange={updateAppearanceOption}
+              initialSection={settingsInitialSection} />}
         </div>
       </div>
       {paletteOpen && (

@@ -13,16 +13,18 @@ export default function SettingsState({
   user,
   sessionCount = 0,
   onLogout,
-  onSessionsChanged,
   onAccountDeleted,
   options = ANALYSIS_OPTION_DEFAULTS,
   onOptionChange,
   appearance = APPEARANCE_DEFAULTS,
   onAppearanceChange,
+  initialSection,
 }) {
   const lth = lt || getLangTheme(null);
-  const [section, setSection] = useState('account');
-  const [modal, setModal] = useState(null); // 'change-password' | 'delete-account' | 'clear-history'
+  // `initialSection` lets other screens deep-link into a specific tab — e.g.
+  // the upload screen's "Settings → LLM provider" link opens us on `llm`.
+  const [section, setSection] = useState(initialSection || 'account');
+  const [modal, setModal] = useState(null); // 'change-password' | 'delete-account'
   const [actionMsg, setActionMsg] = useState(null); // { kind: 'ok'|'err', text }
   const initial = ((user?.name || user?.email || 'U')[0] || 'U').toUpperCase();
   const displayName = user?.name || (user?.email ? user.email.split('@')[0] : 'guest');
@@ -49,36 +51,12 @@ export default function SettingsState({
     }
   };
 
-  const handleClearHistory = async () => {
-    setModal(null);
-    try {
-      const res = await api.clearSessions();
-      flashMsg('ok', `Cleared ${res.deleted || 0} session(s).`);
-      onSessionsChanged?.();
-    } catch (err) {
-      flashMsg('err', err?.message || String(err));
-    }
-  };
-
-  const handleExportAll = () => {
-    // Trigger the browser download via a hidden anchor — simpler than a
-    // fetch+blob round-trip for a multi-MB zip and lets the browser show
-    // its native progress UI.
-    const a = document.createElement('a');
-    a.href = api.exportAllUrl();
-    a.download = '';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  };
-
   const sections = [
     { id:'account',      label:'Account'       },
     { id:'engine',       label:'Engine'        },
     { id:'llm',          label:'LLM provider'  },
     { id:'appearance',   label:'Appearance'    },
     { id:'shortcuts',    label:'Keyboard'      },
-    { id:'data',         label:'Data & privacy'},
   ];
 
   return (
@@ -218,10 +196,12 @@ export default function SettingsState({
             </Row>
             <Row label="Max layers" hint="Blank means backend default. JS default is 100, Python default is 500.">
               <OptionalNumberInput val={maxLayers} min={1} max={2000} w={90}
+                placeholder="100 / 500"
                 onChange={(v) => onOptionChange?.('maxLayers', v)} />
             </Row>
             <Row label="Sandbox timeout" hint="Blank means engine default timeout in seconds.">
               <OptionalNumberInput val={timeout} min={1} max={3600} w={90}
+                placeholder="30 / 120"
                 onChange={(v) => onOptionChange?.('timeout', v)} />
             </Row>
             <Row label="Verbose logs" hint="Keep detailed engine logs in the analysis stream.">
@@ -276,15 +256,11 @@ export default function SettingsState({
               />
             </Row>
             <Row label="UI scale" hint="Adjust the app density without changing browser zoom.">
-              <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                <input type="range" min="0.9" max="1.25" step="0.01"
-                  value={appearance.uiScale}
-                  onChange={(e) => onAppearanceChange?.('uiScale', Number(e.target.value))}
-                  style={{ width:180, accentColor: lth.accent }} />
-                <span style={{ fontSize:11, color: C.textDim, fontFamily:C.mono, width:42 }}>
-                  {Math.round((appearance.uiScale || 1) * 100)}%
-                </span>
-              </div>
+              <ScaleSlider
+                value={appearance.uiScale}
+                onCommit={(v) => onAppearanceChange?.('uiScale', v)}
+                accentColor={lth.accent}
+              />
             </Row>
             <Row label="Editor font">
               <select value={appearance.monoFont}
@@ -362,31 +338,6 @@ export default function SettingsState({
           </Block>
         )}
 
-        {section === 'data' && (
-          <Block title="Data & privacy"
-            subtitle="Manage the analyses stored on the server for this account.">
-            <Row label="Stored sessions"
-              hint="Analyses kept in the backend SQLite for this account.">
-              <span style={{ fontSize:12, fontFamily:C.mono, color: C.text }}>
-                {sessionCount} session{sessionCount === 1 ? '' : 's'}
-              </span>
-            </Row>
-            <Row label="Export all data"
-              hint="Download a ZIP with the original sample, cleaned source, diff, and full report for every finished analysis.">
-              <button onClick={handleExportAll} className="btn-hover" style={inputBtn()}>
-                Download .zip
-              </button>
-            </Row>
-            <Row label="Clear history"
-              hint="Permanently removes every analysis record and the per-job working directories on disk. Cannot be undone.">
-              <button onClick={() => setModal('clear-history')} className="btn-hover"
-                style={{ ...inputBtn(), color: C.red, borderColor:'#3a2020' }}
-                disabled={sessionCount === 0}>
-                Clear all sessions
-              </button>
-            </Row>
-          </Block>
-        )}
       </div>
 
       {modal === 'change-password' && (
@@ -411,17 +362,6 @@ export default function SettingsState({
           }}
         />
       )}
-      {modal === 'clear-history' && (
-        <ConfirmModal
-          lth={lth}
-          title="Clear analysis history"
-          body={`This will delete ${sessionCount} stored session${sessionCount === 1 ? '' : 's'} and the matching working directories on the server. Cannot be undone.`}
-          confirmLabel="Clear all"
-          danger
-          onCancel={() => setModal(null)}
-          onConfirm={handleClearHistory}
-        />
-      )}
     </div>
   );
 }
@@ -439,25 +379,6 @@ function ModalShell({ children, onClose, width = 420 }) {
         {children}
       </div>
     </div>
-  );
-}
-
-function ConfirmModal({ lth, title, body, confirmLabel = 'Confirm', danger, onCancel, onConfirm }) {
-  return (
-    <ModalShell onClose={onCancel}>
-      <div style={{ fontSize:15, fontWeight:500, color: C.text, marginBottom:8 }}>{title}</div>
-      <div style={{ fontSize:12.5, color: C.textDim, lineHeight:1.55, marginBottom:16 }}>{body}</div>
-      <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
-        <button onClick={onCancel} className="btn-hover" style={inputBtn()}>Cancel</button>
-        <button onClick={onConfirm} className="btn-hover"
-          style={{ ...inputBtn(),
-            color: danger ? C.red : lth.accentText,
-            borderColor: danger ? '#3a2020' : lth.accent,
-            background: danger ? 'rgba(220,80,80,.08)' : lth.accentDim }}>
-          {confirmLabel}
-        </button>
-      </div>
-    </ModalShell>
   );
 }
 
@@ -610,7 +531,13 @@ function LLMSection({ lth, flashMsg }) {
   const [cfg, setCfg] = useState(null);          // last server snapshot
   const [draft, setDraft] = useState(null);      // editable copy
   const [apiKey, setApiKey] = useState('');      // empty = "keep existing"
+  // Plaintext key the backend handed back when the user clicked "show".
+  // null until they reveal; once set, used to detect whether the input
+  // was actually edited vs simply revealed (so Save stays disabled when
+  // the user only peeks).
+  const [revealedKey, setRevealedKey] = useState(null);
   const [showKey, setShowKey] = useState(false);
+  const [revealBusy, setRevealBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [check, setCheck] = useState(null);      // last test-connection result
   const [checkBusy, setCheckBusy] = useState(false);
@@ -638,6 +565,14 @@ function LLMSection({ lth, flashMsg }) {
     return () => { cancelled = true; };
   }, []);
 
+  // "Key edited" means the input differs from whatever the backend
+  // currently has. Without a reveal we only know the field is non-empty
+  // (→ user typed a new key); with a reveal we compare against the
+  // revealed plaintext so a no-op peek doesn't flip the Save button.
+  const keyDirty = revealedKey == null
+    ? apiKey.length > 0
+    : apiKey !== revealedKey;
+
   const dirty = draft && cfg && (
     draft.provider        !== (cfg.provider || 'openai') ||
     draft.model           !== (cfg.model || '') ||
@@ -647,7 +582,7 @@ function LLMSection({ lth, flashMsg }) {
     Number(draft.max_code_size) !== Number(cfg.max_code_size || 0) ||
     Number(draft.timeout_seconds) !== Number(cfg.timeout_seconds || 0) ||
     draft.api_key_env     !== (cfg.api_key_env || '') ||
-    apiKey.length > 0
+    keyDirty
   );
 
   const save = async () => {
@@ -655,10 +590,21 @@ function LLMSection({ lth, flashMsg }) {
     setBusy(true);
     try {
       const body = { ...draft };
-      if (apiKey) body.api_key = apiKey;
+      // Only write the key when the user actually edited it. A bare
+      // "reveal then save" path keeps the existing stored key intact.
+      if (keyDirty && apiKey) body.api_key = apiKey;
       const next = await api.putLlmConfig(body);
+      // The backend automatically clears its 'Test connection' stamp
+      // whenever a write changes provider/model/base_url/api_key (see
+      // ``llm_config.write_config``), so the response's ``verified`` flag
+      // is already accurate. We only have to drop our local probe state
+      // when verification is now gone — otherwise the stale green badge
+      // would linger until the next mount.
+      if (!next?.verified) setCheck(null);
       setCfg(next);
       setApiKey('');
+      setRevealedKey(null);
+      setShowKey(false);
       flashMsg?.('ok', 'LLM configuration saved.');
     } catch (err) {
       flashMsg?.('err', err?.message || String(err));
@@ -672,14 +618,43 @@ function LLMSection({ lth, flashMsg }) {
     setBusy(true);
     try {
       const next = await api.putLlmConfig({ clear_api_key: true });
+      // Clearing the key always invalidates verification on the backend.
+      setCheck(null);
       setCfg(next);
       setApiKey('');
+      setRevealedKey(null);
+      setShowKey(false);
       flashMsg?.('ok', 'API key cleared.');
     } catch (err) {
       flashMsg?.('err', err?.message || String(err));
     } finally {
       setBusy(false);
     }
+  };
+
+  // "show" toggle: on the first reveal we fetch the plaintext key from the
+  // backend so the user can see what's currently stored. Subsequent toggles
+  // just flip the input type without another network round-trip.
+  const toggleShowKey = async () => {
+    if (revealBusy) return;
+    if (!showKey && apiKey === '' && cfg.api_key_present && revealedKey == null) {
+      setRevealBusy(true);
+      try {
+        const revealed = await api.getLlmConfig({ reveal: true });
+        const key = String(revealed?.api_key || '');
+        if (key) {
+          setApiKey(key);
+          setRevealedKey(key);
+        }
+      } catch (err) {
+        flashMsg?.('err', `Failed to reveal key: ${err?.message || err}`);
+        setRevealBusy(false);
+        return;
+      } finally {
+        setRevealBusy(false);
+      }
+    }
+    setShowKey((v) => !v);
   };
 
   const runCheck = async () => {
@@ -689,8 +664,14 @@ function LLMSection({ lth, flashMsg }) {
     try {
       const res = await api.checkLlm('both');
       setCheck(res);
+      // Verified-stamp persistence happens server-side inside
+      // ``/api/llm/check`` itself — re-fetch the public config so our
+      // local snapshot (and the ✓ verified badge driven by ``cfg.verified``)
+      // reflect the new state without waiting for a remount.
+      try { setCfg(await api.getLlmConfig()); } catch { /* leave stale cfg */ }
     } catch (err) {
       setCheck({ ok: false, results: [{ engine: 'both', ok: false, error: err?.message || String(err) }] });
+      try { setCfg(await api.getLlmConfig()); } catch { /* leave stale cfg */ }
     } finally {
       setCheckBusy(false);
     }
@@ -719,15 +700,19 @@ function LLMSection({ lth, flashMsg }) {
 
   const setF = (k) => (v) => setDraft((d) => ({ ...d, [k]: v }));
   const keyMissing = !cfg.api_key_present;
+  // "Verified" reflects the persisted stamp from the last successful test
+  // for the cfg currently saved on disk. Used to surface a green badge so
+  // the user sees the connection state without re-clicking Test connection.
+  const verified = api.isLlmVerified(cfg);
 
   return (
     <Block title="LLM provider"
-      subtitle="Saved to llm_config.toml in both js-deobfuscator and python-deobfuscator.">
+      subtitle="Saved to shared llm_config.toml files; the API key is usable only by this account.">
       {keyMissing && (
         <div style={{ padding:'8px 12px', background:'rgba(220,170,80,.08)',
           border:'1px solid rgba(220,170,80,.25)', borderRadius:3,
           fontSize:11.5, color:'#dab852', marginBottom:14, fontFamily: C.mono }}>
-          ⚠ LLM features are disabled until you set an API key.
+          ⚠ LLM features are disabled until this account has an API key.
         </div>
       )}
 
@@ -760,7 +745,15 @@ function LLMSection({ lth, flashMsg }) {
           value={draft.model}
           onChange={(e) => setF('model')(e.target.value)}
           list="llm-model-hints"
-          placeholder="gpt-4o-mini"
+          placeholder="openai/gpt-4o-mini"
+          name="llm-model-id"
+          autoComplete="off"
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
+          data-1p-ignore="true"
+          data-lpignore="true"
+          data-form-type="other"
           style={{ width:280, background: C.bg2, border:`1px solid ${C.border2}`,
             padding:'6px 10px', fontSize:12, color: C.text, outline:'none',
             borderRadius:3, fontFamily: C.mono }} />
@@ -771,22 +764,54 @@ function LLMSection({ lth, flashMsg }) {
 
       <Row label="API key"
         hint={cfg.api_key_present
-          ? `Currently set (…${cfg.api_key_last4 || '????'}). Leave empty to keep, or paste a new key to overwrite.`
-          : 'Not set. Paste a key to enable LLM features.'}>
+          ? (revealedKey != null
+              ? 'Revealed from llm_config.toml. Edit to overwrite, or use “clear” to remove.'
+              : `Currently set (…${cfg.api_key_last4 || '????'}). Click “show” to reveal, or paste a new key to overwrite.`)
+          : 'Not set for this account. Paste your own key to enable LLM features.'}>
         <div style={{ display:'flex', gap:6, alignItems:'center', width:'100%' }}>
+          {/*
+            Intentionally `type="text"` (not `type="password"`) — Chrome's
+            "Save password?" heuristic fires on any password input regardless
+            of autoComplete attributes, so we mask the rendered glyphs via
+            CSS `-webkit-text-security` instead. Supported in all evergreen
+            browsers (Chrome, Edge, Safari, Firefox 122+). Falls back to
+            unmasked text on ancient browsers — acceptable trade-off for a
+            local dev tool, and the value is still revealable on demand via
+            the "show" button anyway.
+          */}
           <input
-            type={showKey ? 'text' : 'password'}
+            type="text"
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
-            placeholder={cfg.api_key_present ? '••••••••' : 'paste API key'}
+            // Placeholder mirrors the stored key's actual length when one
+            // is set (the backend returns ``api_key_length`` alongside
+            // ``api_key_last4``). Empty when no key is on file, so the
+            // user is never misled into thinking a short token is enough.
+            placeholder={
+              cfg.api_key_present
+                ? '•'.repeat(Math.max(8, Math.min(cfg.api_key_length || 0, 120)))
+                : ''
+            }
+            name="llm-provider-secret"
+            autoComplete="off"
+            spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
+            data-1p-ignore="true"
+            data-lpignore="true"
+            data-form-type="other"
             style={{ flex:1, maxWidth:320, background: C.bg2,
               border:`1px solid ${C.border2}`, padding:'6px 10px',
               fontSize:11.5, color: C.text, outline:'none',
-              borderRadius:3, fontFamily: C.mono }} />
-          <button onClick={() => setShowKey((v) => !v)} className="btn-hover"
+              borderRadius:3, fontFamily: C.mono,
+              WebkitTextSecurity: showKey ? 'none' : 'disc',
+              textSecurity: showKey ? 'none' : 'disc' }} />
+          <button onClick={toggleShowKey} disabled={revealBusy} className="btn-hover"
             title={showKey ? 'Hide key' : 'Show key'}
-            style={{ ...inputBtn(), minWidth:46 }}>
-            {showKey ? 'hide' : 'show'}
+            style={{ ...inputBtn(), minWidth:46,
+              opacity: revealBusy ? 0.55 : 1,
+              cursor: revealBusy ? 'wait' : 'pointer' }}>
+            {revealBusy ? '…' : (showKey ? 'hide' : 'show')}
           </button>
           {cfg.api_key_present && (
             <button onClick={clearKey} disabled={busy} className="btn-hover"
@@ -803,6 +828,14 @@ function LLMSection({ lth, flashMsg }) {
           value={draft.base_url}
           onChange={(e) => setF('base_url')(e.target.value)}
           placeholder="https://api.openai.com/v1"
+          name="llm-base-url"
+          autoComplete="off"
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
+          data-1p-ignore="true"
+          data-lpignore="true"
+          data-form-type="other"
           style={{ width:'100%', maxWidth:380, background: C.bg2,
             border:`1px solid ${C.border2}`, padding:'6px 10px',
             fontSize:11.5, color: C.text, outline:'none',
@@ -814,8 +847,8 @@ function LLMSection({ lth, flashMsg }) {
           onChange={(v) => setF('temperature')(v)} />
       </Row>
 
-      <Row label="Max tokens" hint="Per-response cap. Mapped to max_completion_tokens for gpt-5 models.">
-        <NumInput val={draft.max_tokens} step={1} min={1} w={100}
+      <Row label="Max tokens" hint="Per-response cap. Typical limits: 4096–16384 (gpt-4o), up to 32768 (gpt-5). Mapped to max_completion_tokens for gpt-5 models.">
+        <NumInput val={draft.max_tokens} step={256} min={1} max={32768} w={100}
           onChange={(v) => setF('max_tokens')(v)} />
       </Row>
 
@@ -829,8 +862,11 @@ function LLMSection({ lth, flashMsg }) {
           onChange={(v) => setF('timeout_seconds')(v)} />
       </Row>
 
+      {/* No borderTop here — the previous <Row>'s borderBottom already
+          provides the divider, so adding another line + marginTop ends up
+          rendering two parallel rules ~8 px apart on the LLM provider page. */}
       <div style={{ display:'flex', alignItems:'center', gap:10,
-        padding:'14px 0 4px', borderTop:`1px solid ${C.border}`, marginTop:8 }}>
+        padding:'14px 0 4px' }}>
         <button onClick={save} disabled={!dirty || busy} className="btn-hover"
           style={{ ...inputBtn(),
             color: lth.accentText, borderColor: lth.accent, background: lth.accentDim,
@@ -844,7 +880,13 @@ function LLMSection({ lth, flashMsg }) {
             cursor: (checkBusy || keyMissing) ? 'not-allowed' : 'pointer' }}>
           {checkBusy ? 'Probing…' : 'Test connection'}
         </button>
-        {check && <CheckResult check={check} />}
+        {check ? <CheckResult check={check} /> : (verified && (
+          <span title="Last Test connection succeeded for this provider/model/key"
+            style={{ padding:'3px 8px', borderRadius:2, fontFamily:C.mono, fontSize:11,
+              color: C.green, background:'rgba(92,194,121,.10)', border:'1px solid #2c4a44' }}>
+            ✓ verified
+          </span>
+        ))}
       </div>
     </Block>
   );
@@ -937,6 +979,41 @@ function Swatches({ value, onChange }) {
   );
 }
 
+// `#root` is `zoom: var(--ui-scale)`, so committing every micro-step of a
+// drag re-zooms the page (and the slider track itself) in real time, which
+// makes the thumb skitter around under the cursor. Mirror the value
+// locally during the gesture and only propagate on release — that way the
+// slider geometry stays stable until the user lets go.
+function ScaleSlider({ value, onCommit, accentColor }) {
+  const [local, setLocal] = useState(value);
+  const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    if (!dragging) setLocal(value);
+  }, [value, dragging]);
+
+  const commit = () => {
+    setDragging(false);
+    if (local !== value) onCommit?.(local);
+  };
+
+  return (
+    <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+      <input type="range" min="0.9" max="1.25" step="0.01"
+        value={local}
+        onChange={(e) => { setDragging(true); setLocal(Number(e.target.value)); }}
+        onPointerUp={commit}
+        onPointerCancel={commit}
+        onKeyUp={commit}
+        onBlur={commit}
+        style={{ width:180, accentColor }} />
+      <span style={{ fontSize:11, color: C.textDim, fontFamily:C.mono, width:42 }}>
+        {Math.round((local || 1) * 100)}%
+      </span>
+    </div>
+  );
+}
+
 function NumInput({ val, onChange, step = 1, min, max, w = 80 }) {
   return (
     <input className="no-spin" type="number" value={val ?? ''} step={step} min={min} max={max}
@@ -952,10 +1029,10 @@ function NumInput({ val, onChange, step = 1, min, max, w = 80 }) {
   );
 }
 
-function OptionalNumberInput({ val, onChange, step = 1, min, max, w = 80 }) {
+function OptionalNumberInput({ val, onChange, step = 1, min, max, w = 80, placeholder = 'default' }) {
   return (
     <input className="no-spin" type="number" value={val ?? ''} step={step} min={min} max={max}
-      placeholder="default"
+      placeholder={placeholder}
       onChange={(e) => {
         const raw = e.target.value;
         if (raw === '') return onChange?.(null);

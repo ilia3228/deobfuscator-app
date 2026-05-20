@@ -47,6 +47,7 @@ export default function EmptyState({
   onClearError,
   options = ANALYSIS_OPTION_DEFAULTS,
   onOptionChange,
+  onOpenSettings,
 }) {
   const lth = lt || getLangTheme(null);
   const [drag, setDrag] = useState(false);
@@ -56,7 +57,10 @@ export default function EmptyState({
   const [sampleLoading, setSampleLoading] = useState(null);
   const [sampleError, setSampleError] = useState(null);
   const [langMode, setLangMode] = useState('auto'); // 'auto' | 'js' | 'py'
-  const [llmConfigured, setLlmConfigured] = useState(null); // null=unknown, true/false once probed
+  // null=loading, true once we have both an api_key AND a matching
+  // "Test connection" stamp, false otherwise. Drives whether the non-`off`
+  // LLM modes are selectable on the upload screen.
+  const [llmReady, setLlmReady] = useState(null);
   const fileInputRef = useRef(null);
   // Right-side options panel is user-resizable from its left edge.
   const {
@@ -76,29 +80,41 @@ export default function EmptyState({
   const verbose = options.verbose !== false;
   const maxLayers = options.maxLayers ?? '';
   const timeout = options.timeout ?? '';
+  // Engine defaults differ by language (see analysisOptions.js). Surface them
+  // as the input placeholder so users see what "blank" actually means instead
+  // of a generic "default" word.
+  const effectiveLang = langMode === 'auto' ? (lang === 'py' ? 'py' : 'js') : langMode;
+  const maxLayersDefault = effectiveLang === 'py' ? 500 : 100;
+  const timeoutDefault = effectiveLang === 'py' ? 120 : 30;
   const canSubmit = !!pickedFile || !!pasted.trim();
   const fileWarning = pickedFile && pickedFile.size > LARGE_FILE_BYTES
     ? `Large sample (${formatBytes(pickedFile.size)}). Analysis may take longer and LLM cleanup can be skipped by max-code-size limits.`
     : null;
 
-  // Probe whether the backend has an LLM key configured. Disabled segmented
-  // controls when not — the user is directed to Settings → LLM.
+  // Probe both whether an API key is configured AND whether the user has
+  // already run "Test connection" for this exact provider/model/base_url/key
+  // tuple. Until both hold, the non-`off` LLM modes are disabled and the user
+  // is pointed at Settings → LLM provider.
   useEffect(() => {
     let cancelled = false;
     api.getLlmConfig()
-      .then((cfg) => { if (!cancelled) setLlmConfigured(!!cfg?.api_key_present); })
-      .catch(() => { if (!cancelled) setLlmConfigured(false); });
+      .then((cfg) => {
+        if (cancelled) return;
+        setLlmReady(!!cfg?.api_key_present && api.isLlmVerified(cfg));
+      })
+      .catch(() => { if (!cancelled) setLlmReady(false); });
     return () => { cancelled = true; };
   }, []);
 
-  // Auto-clamp to 'off' when the key disappears so we never submit a job that
-  // would be rejected by the backend's "llm not configured" guard.
+  // Auto-clamp to 'off' when LLM is not ready so we never submit a job that
+  // would be rejected by the backend's "llm not configured" guard or by an
+  // unverified provider connection.
   useEffect(() => {
-    if (llmConfigured === false && llmMode !== 'off') {
+    if (llmReady === false && llmMode !== 'off') {
       onOptionChange?.('llmMode', 'off');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [llmConfigured]);
+  }, [llmReady]);
 
   // Live preview of which language the current paste will be routed to.
   // Pure display — `submit` re-runs detection to stay honest.
@@ -200,7 +216,7 @@ export default function EmptyState({
         <input
           ref={fileInputRef}
           type="file"
-          accept=".js,.ts,.mjs,.py,.txt,text/*,application/javascript,application/x-python-code"
+          accept=".js,.py,.zip,application/javascript,application/x-python-code,application/zip"
           style={{ display: 'none' }}
           onChange={(e) => acceptFile(e.target.files?.[0])}
         />
@@ -264,7 +280,7 @@ export default function EmptyState({
           <textarea
             value={pasted}
             onChange={(e) => { setPasted(e.target.value); setSampleError(null); onClearError?.(); }}
-            placeholder={`var _0x4f2a=['push','ZmV0Y2g=','aHR0cHM6Ly9j…\n\n// or drag a .js / .py file onto this area`}
+            placeholder={`var _0x4f2a=['push','ZmV0Y2g=','aHR0cHM6Ly9j…\n\n// or drag a .js / .py / .zip file onto this area`}
             rows={8}
             style={{
               width: '100%',
@@ -294,7 +310,7 @@ export default function EmptyState({
             <span style={{ fontSize: 10.5, fontFamily: C.mono, color: C.textMuted }}>
               {pasted.length > 0
                 ? `${pasted.length} chars${langMode === 'auto' && autoGuess ? ` · auto → ${autoGuess}` : ''}`
-                : 'js · ts · mjs · py'}
+                : 'js · py · zip'}
             </span>
             <div
               role="radiogroup"
@@ -509,12 +525,14 @@ export default function EmptyState({
               border: `1px solid ${C.border2}`,
               borderRadius: 3,
               overflow: 'hidden',
-              opacity: llmConfigured === false ? 0.55 : 1,
+              opacity: llmReady === true ? 1 : 0.55,
             }}
           >
             {LLM_MODES.map((m, i) => {
               const active = llmMode === m;
-              const disabled = llmConfigured === false && m !== 'off';
+              // `off` is always selectable (it's the "no LLM" choice).
+              // Other modes require a verified connection.
+              const disabled = llmReady !== true && m !== 'off';
               return (
                 <button
                   key={m}
@@ -523,6 +541,7 @@ export default function EmptyState({
                   disabled={disabled}
                   onClick={() => !disabled && onOptionChange?.('llmMode', m)}
                   title={
+                    disabled ? 'Configure & verify the LLM provider in Settings first' :
                     m === 'off' ? 'No LLM (default)' :
                     m === 'rename' ? 'Use LLM only for variable renaming' :
                     m === 'format' ? 'Use LLM only for formatting/cleanup' :
@@ -544,9 +563,22 @@ export default function EmptyState({
               );
             })}
           </div>
-          {llmConfigured === false && (
+          {llmReady === false && (
             <div style={{ marginTop: 6, fontSize: 10.5, color: C.textMuted, lineHeight: 1.45 }}>
-              No API key — configure LLM in Settings → LLM provider.
+              Connect & verify in{' '}
+              <button
+                type="button"
+                onClick={() => onOpenSettings?.()}
+                style={{
+                  background: 'none', border: 'none', padding: 0,
+                  color: lth.accentText, cursor: 'pointer', fontFamily: 'inherit',
+                  fontSize: 'inherit', textDecoration: 'underline',
+                  textUnderlineOffset: 2,
+                }}
+              >
+                Settings → LLM provider
+              </button>
+              .
             </div>
           )}
         </div>
@@ -577,14 +609,14 @@ export default function EmptyState({
             hint="engine default"
             value={maxLayers}
             onChange={(v) => onOptionChange?.('maxLayers', v)}
-            placeholder="default"
+            placeholder={String(maxLayersDefault)}
           />
           <NumberRow
             label="Timeout"
             hint="seconds per layer"
             value={timeout}
             onChange={(v) => onOptionChange?.('timeout', v)}
-            placeholder="default"
+            placeholder={String(timeoutDefault)}
           />
           <OptionCheck
             checked={staticAnalysis}

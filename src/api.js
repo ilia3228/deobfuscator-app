@@ -105,23 +105,6 @@ export async function getSessions() {
   return jsonOrThrow(await fetch(`${BASE}/sessions`, { headers: authHeaders() }));
 }
 
-/** Bulk-clear every analysis from the user's history. */
-export async function clearSessions() {
-  return jsonOrThrow(await fetch(`${BASE}/sessions`, {
-    method: 'DELETE', headers: authHeaders(),
-  }));
-}
-
-/**
- * Trigger the export download. The browser handles the actual file save —
- * we just produce a one-off URL with the bearer token attached as a query
- * param (the request goes through the same proxy as the rest of /api/*).
- */
-export function exportAllUrl() {
-  const t = getToken();
-  return `${BASE}/export${t ? `?token=${encodeURIComponent(t)}` : ''}`;
-}
-
 /**
  * Upload a sample for analysis.
  * @param {File|Blob} file
@@ -177,8 +160,15 @@ export async function analyze(file, opts = {}) {
 }
 
 // ─── LLM config ──────────────────────────────────────────────────────────────
-export async function getLlmConfig() {
-  return jsonOrThrow(await fetch(`${BASE}/llm/config`, { headers: authHeaders() }));
+/**
+ * @param {{reveal?: boolean}} [opts]
+ *   When `reveal` is true the response additionally includes the plaintext
+ *   `api_key` field, but only for the user that owns the saved key. Default
+ *   flow keeps the key masked (`api_key_present` + `api_key_last4` only).
+ */
+export async function getLlmConfig(opts = {}) {
+  const qs = opts.reveal ? '?reveal=1' : '';
+  return jsonOrThrow(await fetch(`${BASE}/llm/config${qs}`, { headers: authHeaders() }));
 }
 
 /**
@@ -205,6 +195,30 @@ export async function checkLlm(engine = 'both') {
     { method: 'POST', headers: authHeaders() },
   ));
 }
+
+// ─── LLM connection verification ─────────────────────────────────────────────
+// The upload screen ("LLM mode" segmented) should only enable non-`off` modes
+// when the user has actually run "Test connection" in Settings for the current
+// provider/model/base_url/key. The verified state is persisted server-side
+// (mock-api/llm_verified.json) — see ``llm_config.py``'s
+// ``write_verified_fingerprint`` — so it survives page refreshes and server
+// restarts for the key owner. The frontend just reads the ``verified`` flag
+// the backend folds into ``GET /api/llm/config``.
+//
+// Any change to provider/model/base_url/api_key clears the stamp on the
+// backend automatically (see ``write_config``), so the helper below stays
+// honest without needing client-side bookkeeping.
+
+/** True iff cfg has an api_key AND the backend has a matching verified stamp. */
+export function isLlmVerified(cfg) {
+  return !!(cfg && cfg.api_key_present && cfg.verified);
+}
+
+// One-time cleanup: an older build of this app stored the verified
+// fingerprint in localStorage under ``jsdeobf.llmVerified``. The key is
+// no longer read anywhere, but we delete it on import so users who were
+// upgraded mid-session don't keep a stale entry hanging around.
+try { localStorage.removeItem('jsdeobf.llmVerified'); } catch { /* noop */ }
 
 export async function getJob(jobId) {
   return jsonOrThrow(await fetch(`${BASE}/jobs/${jobId}`, { headers: authHeaders() }));
