@@ -274,7 +274,7 @@ export default function App() {
         size: meta.size,
         lang: meta.lang,
         status: 'queued',
-        uploadedCode,
+        uploadedCode: meta.uploaded_code || uploadedCode,
         sourceFile: file,
         sourceOptions: effectiveOptions,
         startedAt: Date.now(),
