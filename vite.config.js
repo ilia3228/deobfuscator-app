@@ -10,11 +10,12 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
   server: {
+    host: true,
     port: 5173,
     open: true,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8090',
+        target: 'https://writer-commit-reactions-sofa.trycloudflare.com',
         changeOrigin: true,
       },
     },
