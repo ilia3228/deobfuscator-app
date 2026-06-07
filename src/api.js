@@ -1,9 +1,9 @@
 // Thin client for the mock-api backend. All paths are same-origin and proxied
-// by Vite (see vite.config.js) to http://127.0.0.1:8090 in development.
+// by Vite (see vite.config.js) to the backend in development.
 //
-// Bearer tokens live in localStorage under TOKEN_KEY. Every fetch and SSE
-// subscription pulls the token from there; EventSource can't set headers,
-// so the token is also appended to the stream URL as `?token=…`.
+// Bearer tokens live in localStorage under TOKEN_KEY; every fetch pulls the
+// token from there. Live job progress is followed by polling getJob() rather
+// than the SSE stream, which intermediaries (e.g. Cloudflare tunnels) buffer.
 
 const BASE = '/api';
 const TOKEN_KEY = 'jsdeobf.token';
@@ -234,29 +234,4 @@ export async function deleteJob(jobId) {
   return jsonOrThrow(await fetch(`${BASE}/jobs/${jobId}`, {
     method: 'DELETE', headers: authHeaders(),
   }));
-}
-
-/**
- * Subscribe to the live event stream for a job.
- * @param {string} jobId
- * @param {{onSnapshot?: Function, onLog?: Function, onPhase?: Function, onEnd?: Function, onError?: Function}} handlers
- * @returns {() => void} unsubscribe
- */
-export function streamJob(jobId, handlers = {}) {
-  const t = getToken();
-  const url = `${BASE}/jobs/${jobId}/stream${t ? `?token=${encodeURIComponent(t)}` : ''}`;
-  const es = new EventSource(url);
-  const wrap = (h) => (ev) => {
-    if (!h) return;
-    try { h(JSON.parse(ev.data)); } catch (err) { handlers.onError && handlers.onError(err); }
-  };
-  es.addEventListener('snapshot', wrap(handlers.onSnapshot));
-  es.addEventListener('log',      wrap(handlers.onLog));
-  es.addEventListener('phase',    wrap(handlers.onPhase));
-  es.addEventListener('end', (ev) => {
-    wrap(handlers.onEnd)(ev);
-    es.close();
-  });
-  es.onerror = (err) => handlers.onError && handlers.onError(err);
-  return () => es.close();
 }

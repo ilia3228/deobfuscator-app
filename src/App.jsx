@@ -38,6 +38,16 @@ const emptyJob = () => ({
 
 const LAYOUT_KEY = 'jsdeobf.layoutFlags';
 
+// While a job runs we poll GET /api/jobs/{id} rather than subscribing to the
+// SSE stream — intermediaries (e.g. Cloudflare tunnels) buffer the stream and
+// withhold every log line until the job ends. Plain request/response can't be
+// buffered like that, so logs arrive live at this cadence.
+const POLL_INTERVAL_MS = 500;
+// If nothing observable (status/phase/progress/log count) changes for this long
+// the job is likely orphaned (e.g. backend restarted mid-run); surface the
+// recoverable "updates lost" banner. Real progress clears it again.
+const STALL_LIMIT_MS = 90000;
+
 function readLayoutFlags() {
   try {
     const parsed = JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}');
@@ -78,8 +88,8 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [job, setJob] = useState(emptyJob());
   const [uploadError, setUploadError] = useState(null);
-  const [streamError, setStreamError] = useState(null); // set when SSE connection drops mid-job
-  const [streamTick, setStreamTick] = useState(0);      // bump to force-reconnect the stream
+  const [streamError, setStreamError] = useState(null); // set when live polling keeps failing/stalls
+  const [streamTick, setStreamTick] = useState(0);      // bump to restart polling for the current job
   const [analysisOptions, setAnalysisOptions] = useState(() => readAnalysisOptions());
   const [appearanceOptions, setAppearanceOptions] = useState(() => readAppearanceOptions());
   const [globalDrag, setGlobalDrag] = useState(false);
@@ -184,56 +194,79 @@ export default function App() {
   }, []);
 
 
-  // ── live stream subscription ──────────────────────────────────────────────
+  // ── live job polling ───────────────────────────────────────────────────────
   useEffect(() => {
     if (!job.id) return;
     if (job.status === 'done' || job.status === 'error' || job.status === 'cancelled') return;
     if (streamUnsubRef.current) streamUnsubRef.current();
+
+    let stopped = false;
+    let timer = null;
+    let failures = 0;
+    let lastSig = null;
+    let lastChangeAt = Date.now();
     const clearStreamErr = () => setStreamError((e) => (e ? null : e));
-    streamUnsubRef.current = api.streamJob(job.id, {
-      onSnapshot: (s) => {
-        clearStreamErr();
-        setJob(j => ({
-          ...j, status: s.status || j.status, phase: s.phase || j.phase,
-          progress: s.progress ?? j.progress, logs: s.logs || j.logs,
-        }));
-      },
-      onLog: (line) => {
-        clearStreamErr();
-        setJob(j => ({ ...j, logs: [...j.logs, line] }));
-      },
-      onPhase: (p) => {
-        clearStreamErr();
-        setJob(j => ({ ...j, phase: p.phase, progress: p.progress }));
-      },
-      onEnd: (e) => {
-        clearStreamErr();
-        // Server may emit `end` with a non-terminal status when an in-flight
-        // job was lost mid-flight (e.g. backend restart). Treat anything that
-        // isn't `done` as an error-class outcome so the UI never gets stuck.
+
+    const poll = async () => {
+      if (stopped) return;
+      try {
+        const s = await api.getJob(job.id);
+        if (stopped) return;
+        failures = 0;
+
         const terminalStatus =
-          e.status === 'done' ? 'done'
-          : e.status === 'cancelled' ? 'cancelled'
-          : 'error';
-        const terminalError =
-          e.error || (e.status !== 'done' && e.status !== 'cancelled' && e.status !== 'error'
-            ? `stream ended with unexpected status "${e.status}"`
-            : null);
+          s.status === 'done' ? 'done'
+          : s.status === 'cancelled' ? 'cancelled'
+          : s.status === 'error' ? 'error'
+          : null;
+
         setJob(j => ({
-          ...j, status: terminalStatus, phase: e.phase, progress: e.progress,
-          result: e.result, error: terminalError,
+          ...j,
+          status: s.status || j.status,
+          phase: s.phase || j.phase,
+          progress: s.progress ?? j.progress,
+          logs: s.logs || j.logs,
+          // Only the terminal snapshot carries result/error; keep prior values otherwise.
+          ...(terminalStatus ? { result: s.result, error: s.error } : {}),
         }));
-        if (terminalStatus === 'done') setView('results');
-        else setView('error'); // error | cancelled | unexpected → ErrorState handles branches
-        // refresh sidebar history once a job lands
-        setSessionsTick(t => t + 1);
-      },
-      onError: (err) => {
-        console.error('[stream]', err);
-        setStreamError('Live updates lost. The job may still be running on the server.');
-      },
-    });
-    return () => { if (streamUnsubRef.current) streamUnsubRef.current(); };
+
+        if (terminalStatus) {
+          stopped = true;
+          if (terminalStatus === 'done') setView('results');
+          else setView('error'); // error | cancelled → ErrorState handles branches
+          setSessionsTick(t => t + 1); // refresh sidebar history once a job lands
+          return; // job reached a terminal state — stop polling
+        }
+
+        // Stall watchdog — see STALL_LIMIT_MS. A real change clears the banner.
+        const sig = `${s.status}|${s.phase}|${s.progress}|${(s.logs || []).length}`;
+        const now = Date.now();
+        if (sig !== lastSig) {
+          lastSig = sig;
+          lastChangeAt = now;
+          clearStreamErr();
+        } else if (now - lastChangeAt > STALL_LIMIT_MS) {
+          setStreamError('Live updates lost. The job may still be running on the server.');
+        }
+      } catch (err) {
+        if (stopped) return;
+        // A vanished session (401) is handled by the auth flow elsewhere; just
+        // stop polling so we don't spin on a dead token.
+        if (err && err.status === 401) { stopped = true; return; }
+        // Tolerate transient blips; only surface the banner after a few misses.
+        failures += 1;
+        if (failures >= 3) {
+          console.error('[poll]', err);
+          setStreamError('Live updates lost. The job may still be running on the server.');
+        }
+      }
+      timer = setTimeout(poll, POLL_INTERVAL_MS);
+    };
+    poll();
+
+    const stop = () => { stopped = true; if (timer) { clearTimeout(timer); timer = null; } };
+    streamUnsubRef.current = stop;
+    return stop;
   }, [job.id, streamTick]);
 
   const reconnectStream = useCallback(() => {
