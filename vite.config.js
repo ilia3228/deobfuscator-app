@@ -15,7 +15,7 @@ export default defineConfig({
     open: true,
     proxy: {
       '/api': {
-        target: 'https://writer-commit-reactions-sofa.trycloudflare.com',
+        target: 'https://convention-loans-endangered-gold.trycloudflare.com',
         changeOrigin: true,
       },
     },
