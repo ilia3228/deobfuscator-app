@@ -85,7 +85,7 @@ export default function EmptyState({
   // of a generic "default" word.
   const effectiveLang = langMode === 'auto' ? (lang === 'py' ? 'py' : 'js') : langMode;
   const maxLayersDefault = effectiveLang === 'py' ? 500 : 100;
-  const timeoutDefault = effectiveLang === 'py' ? 120 : 30;
+  const timeoutDefault = 60;
   const canSubmit = !!pickedFile || !!pasted.trim();
   const fileWarning = pickedFile && pickedFile.size > LARGE_FILE_BYTES
     ? `Large sample (${formatBytes(pickedFile.size)}). Analysis may take longer and LLM cleanup can be skipped by max-code-size limits.`

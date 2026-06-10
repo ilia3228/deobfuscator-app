@@ -18,7 +18,7 @@ export const ANALYSIS_OPTION_DEFAULTS = Object.freeze({
   rename: true,
   verbose: true,
   maxLayers: null,   // null → backend default (js: 100, py: 500)
-  timeout: null,     // null → backend default (js: 30s, py: 120s)
+  timeout: null,     // null → backend default (60s for both js and py)
 });
 
 function boolOrDefault(value, fallback) {
