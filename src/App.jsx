@@ -66,11 +66,20 @@ function hasFiles(evt) {
 
 // Read the first ~256 KB of a File/Blob as text. Used so the analysing view
 // can show the user's *actual* uploaded sample rather than a static fixture.
+// Binary uploads (PyInstaller .exe, .pyc) get a short note instead of mojibake;
+// the backend returns the authoritative note, this is just a fallback.
 async function readFilePreview(file) {
   if (!file) return '';
   try {
     const slice = file.size > 262144 ? file.slice(0, 262144) : file;
-    return await slice.text();
+    const buf = new Uint8Array(await slice.arrayBuffer());
+    const probe = buf.subarray(0, 8192);
+    if (probe.includes(0)) {
+      return `# ${file.name} — binary file (${file.size.toLocaleString()} bytes)\n`
+        + `# Binary input is not shown as text; the recovered source `
+        + `appears in the clean pane on the right.\n`;
+    }
+    return new TextDecoder('utf-8').decode(buf);
   } catch {
     return '';
   }

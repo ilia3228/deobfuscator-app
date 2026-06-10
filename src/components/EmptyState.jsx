@@ -216,7 +216,7 @@ export default function EmptyState({
         <input
           ref={fileInputRef}
           type="file"
-          accept=".js,.py,.zip,application/javascript,application/x-python-code,application/zip"
+          accept=".js,.py,.pyc,.exe,.zip,application/javascript,application/x-python-code,application/x-msdownload,application/octet-stream,application/zip"
           style={{ display: 'none' }}
           onChange={(e) => acceptFile(e.target.files?.[0])}
         />
@@ -280,7 +280,7 @@ export default function EmptyState({
           <textarea
             value={pasted}
             onChange={(e) => { setPasted(e.target.value); setSampleError(null); onClearError?.(); }}
-            placeholder={`var _0x4f2a=['push','ZmV0Y2g=','aHR0cHM6Ly9j…\n\n// or drag a .js / .py / .zip file onto this area`}
+            placeholder={`var _0x4f2a=['push','ZmV0Y2g=','aHR0cHM6Ly9j…\n\n// or drag a .js / .py / .pyc / .exe / .zip file onto this area`}
             rows={8}
             style={{
               width: '100%',
@@ -310,7 +310,7 @@ export default function EmptyState({
             <span style={{ fontSize: 10.5, fontFamily: C.mono, color: C.textMuted }}>
               {pasted.length > 0
                 ? `${pasted.length} chars${langMode === 'auto' && autoGuess ? ` · auto → ${autoGuess}` : ''}`
-                : 'js · py · zip'}
+                : 'js · py · pyc · exe · zip'}
             </span>
             <div
               role="radiogroup"
